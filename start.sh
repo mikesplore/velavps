@@ -3,7 +3,11 @@ set -euo pipefail
 
 # Create or reuse a virtual environment in .venv
 if [ ! -d ".venv" ]; then
-  python3 -m venv .venv
+  if ! python3 -m venv .venv 2>/dev/null; then
+    echo "ERROR: Failed to create virtual environment."
+    echo "Install the Python venv package, e.g. on Ubuntu/Debian: sudo apt update && sudo apt install python3-venv"
+    exit 1
+  fi
 fi
 
 # Activate the virtual environment
