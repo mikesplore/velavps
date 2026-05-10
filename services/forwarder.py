@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import binascii
 from typing import Any, Dict, Optional
 
 import httpx
@@ -80,10 +81,19 @@ class Forwarder:
             if response.get("type") != "forward_response" or response.get("request_id") != request_id:
                 raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Invalid agent response")
 
+            body_value = response.get("body", "")
+            if isinstance(body_value, str):
+                try:
+                    body_text = base64.b64decode(body_value).decode("utf-8", errors="replace")
+                except (binascii.Error, ValueError):
+                    body_text = body_value
+            else:
+                body_text = str(body_value)
+
             return {
                 "status_code": response.get("status_code", 502),
                 "headers": response.get("headers", {}),
-                "body": base64.b64decode(response.get("body", "")).decode("utf-8", errors="replace"),
+                "body": body_text,
             }
 
     async def _forward_via_http(
