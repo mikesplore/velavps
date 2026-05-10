@@ -13,9 +13,12 @@ class AgentConnection:
     agent_id: str
     public_address: Optional[str] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
+    status: str = "inactive"
     last_seen: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     websocket: Optional[WebSocket] = None
     connected: bool = False
+    ws_token: Optional[str] = None
+    ws_token_expiry: Optional[datetime] = None
     ws_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     pending_responses: Dict[str, asyncio.Future] = field(default_factory=dict)
     pending_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
@@ -28,9 +31,23 @@ class AgentConnection:
             "agent_id": self.agent_id,
             "public_address": self.public_address,
             "metadata": self.metadata,
+            "status": self.status,
             "last_seen": self.last_seen.isoformat() + "Z",
             "connected": self.connected,
         }
+
+    def set_ws_token(self, token: str, expiry: datetime) -> None:
+        self.ws_token = token
+        self.ws_token_expiry = expiry
+
+    def clear_ws_token(self) -> None:
+        self.ws_token = None
+        self.ws_token_expiry = None
+
+    def validate_ws_token(self, token: str) -> bool:
+        if not self.ws_token or self.ws_token != token or not self.ws_token_expiry:
+            return False
+        return self.ws_token_expiry > datetime.now(timezone.utc)
 
 
 class AgentRegistry:
@@ -53,6 +70,7 @@ class AgentRegistry:
             else:
                 agent.public_address = public_address or agent.public_address
                 agent.metadata.update(metadata)
+            agent.status = "active"
             agent.touch()
             return agent
 
@@ -90,8 +108,31 @@ class AgentRegistry:
                 return
             agent.websocket = None
             agent.connected = False
+            agent.clear_ws_token()
             async with agent.pending_lock:
                 for future in agent.pending_responses.values():
                     if not future.done():
                         future.set_exception(RuntimeError("Agent connection closed"))
                 agent.pending_responses.clear()
+
+    async def set_agent_ws_token(self, agent_id: str, token: str, expiry: datetime) -> AgentConnection:
+        async with self._lock:
+            agent = self._agents.get(agent_id)
+            if agent is None:
+                agent = AgentConnection(agent_id=agent_id)
+                self._agents[agent_id] = agent
+            agent.ws_token = token
+            agent.ws_token_expiry = expiry
+            agent.status = "active"
+            agent.touch()
+            return agent
+
+    async def validate_agent_ws_token(self, agent_id: str, token: str) -> bool:
+        async with self._lock:
+            agent = self._agents.get(agent_id)
+            if not agent:
+                return False
+            valid = agent.validate_ws_token(token)
+            if not valid and agent.ws_token_expiry and agent.ws_token_expiry <= datetime.now(timezone.utc):
+                agent.clear_ws_token()
+            return valid

@@ -7,10 +7,10 @@ client = TestClient(app)
 
 
 def test_missing_api_key_rejected():
-    response = client.get("/agents")
+    response = client.post("/relay/agent-123/test", json={})
     assert response.status_code == 401
 
 
 def test_invalid_api_key_rejected():
-    response = client.get("/agents", headers={"X-API-Key": "bad-key"})
+    response = client.post("/relay/agent-123/test", json={}, headers={"X-API-Key": "bad-key"})
     assert response.status_code == 403

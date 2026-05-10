@@ -38,12 +38,9 @@ Alternative: use the included script to create a virtual environment, install de
 ## API
 
 - `GET /health`
-- `POST /agents/register`
-- `POST /agents/heartbeat`
-- `GET /agents`
-- `POST /agents/{agent_id}/forward`
-- `GET /agents/{agent_id}`
-- `WebSocket /agents/ws?agent_id={agent_id}`
+- `POST /register`
+- `WebSocket /tunnel?agent_id={agent_id}&token={ws_token}`
+- `POST /relay/{agent_id}/{path}`
 
 ## Notes
 

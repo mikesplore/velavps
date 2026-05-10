@@ -41,23 +41,12 @@ def test_forward_to_registered_agent_direct_http():
             "public_address": public_address,
             "metadata": {"test": "forward"},
         }
-        response = client.post(
-            "/agents/register",
-            json=register_payload,
-            headers={"X-Agent-Token": "supersecret-agent-token"},
-        )
+        response = client.post("/register", json=register_payload)
         assert response.status_code == 200
 
-        forward_payload = {
-            "method": "GET",
-            "path": "/echo",
-            "headers": {"Accept": "text/plain"},
-            "query_params": {},
-            "body": None,
-        }
         response = client.post(
-            "/agents/forward-agent/forward",
-            json=forward_payload,
+            "/relay/forward-agent/echo",
+            json={},
             headers={"X-API-Key": "supersecret-client-key"},
         )
 
