@@ -44,9 +44,8 @@ def test_forward_to_registered_agent_direct_http():
         response = client.post("/register", json=register_payload)
         assert response.status_code == 200
 
-        response = client.post(
+        response = client.get(
             "/relay/forward-agent/echo",
-            json={},
             headers={"X-API-Key": "supersecret-client-key"},
         )
 

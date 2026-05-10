@@ -83,7 +83,11 @@ async def agent_tunnel(websocket: WebSocket, agent_id: str, token: str | None = 
         await state.registry.remove_websocket_connection(agent_id)
 
 
-@router.post("/relay/{agent_id}/{path:path}", dependencies=[Depends(get_api_key)])
+@router.api_route(
+    "/relay/{agent_id}/{path:path}",
+    methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"],
+    dependencies=[Depends(get_api_key)],
+)
 async def relay_request(agent_id: str, path: str, request: Request):
     if state.settings is None or state.forwarder is None:
         raise HTTPException(status_code=http_status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Server not configured")
