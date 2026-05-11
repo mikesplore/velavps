@@ -43,6 +43,23 @@ class Forwarder:
 
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Agent is not connected")
 
+    def _encode_body_for_websocket(self, body: Optional[bytes]) -> Dict[str, Any]:
+        if body is None:
+            return {"body": None}
+
+        if not isinstance(body, bytes):
+            body = str(body).encode("utf-8")
+
+        try:
+            decoded = body.decode("utf-8")
+        except UnicodeDecodeError:
+            return {
+                "body": base64.b64encode(body).decode("utf-8"),
+                "body_encoding": "base64",
+            }
+
+        return {"body": decoded}
+
     async def _forward_via_websocket(
         self,
         agent: AgentConnection,
@@ -50,18 +67,13 @@ class Forwarder:
         path: str,
         headers: Dict[str, str],
         query_params: Dict[str, str],
-        body: Optional[str],
+        body: Optional[bytes],
     ) -> Dict[str, Any]:
         assert agent.websocket is not None
 
         async with agent.ws_lock:
             request_id = str(id(agent.websocket)) + str(asyncio.get_running_loop().time())
-            if body is None:
-                body_bytes = b""
-            elif isinstance(body, bytes):
-                body_bytes = body
-            else:
-                body_bytes = str(body).encode("utf-8")
+            body_payload = self._encode_body_for_websocket(body)
 
             message = {
                 "type": "forward_request",
@@ -70,7 +82,7 @@ class Forwarder:
                 "path": path,
                 "query_params": query_params,
                 "headers": headers,
-                "body": base64.b64encode(body_bytes).decode("utf-8"),
+                **body_payload,
             }
 
             future = asyncio.get_running_loop().create_future()
