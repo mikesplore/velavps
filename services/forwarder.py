@@ -23,7 +23,7 @@ class Forwarder:
         path: str,
         headers: Optional[Dict[str, str]] = None,
         query_params: Optional[Dict[str, str]] = None,
-        body: Optional[str] = None,
+        body: Optional[bytes] = None,
     ) -> Dict[str, Any]:
         agent = await self.registry.get_agent(agent_id)
         if not agent:
@@ -53,6 +53,13 @@ class Forwarder:
 
         async with agent.ws_lock:
             request_id = str(id(agent.websocket)) + str(asyncio.get_running_loop().time())
+            if body is None:
+                body_bytes = b""
+            elif isinstance(body, bytes):
+                body_bytes = body
+            else:
+                body_bytes = str(body).encode("utf-8")
+
             message = {
                 "type": "forward_request",
                 "request_id": request_id,
@@ -60,7 +67,7 @@ class Forwarder:
                 "path": path,
                 "query_params": query_params,
                 "headers": headers,
-                "body": base64.b64encode(body.encode("utf-8") if body else b"").decode("utf-8"),
+                "body": base64.b64encode(body_bytes).decode("utf-8"),
             }
 
             future = asyncio.get_running_loop().create_future()
@@ -84,16 +91,18 @@ class Forwarder:
             body_value = response.get("body", "")
             if isinstance(body_value, str):
                 try:
-                    body_text = base64.b64decode(body_value).decode("utf-8", errors="replace")
+                    body_bytes = base64.b64decode(body_value, validate=True)
                 except (binascii.Error, ValueError):
-                    body_text = body_value
+                    body_bytes = body_value.encode("utf-8")
+            elif isinstance(body_value, (bytes, bytearray)):
+                body_bytes = bytes(body_value)
             else:
-                body_text = str(body_value)
+                body_bytes = str(body_value).encode("utf-8")
 
             return {
                 "status_code": response.get("status_code", 502),
                 "headers": response.get("headers", {}),
-                "body": body_text,
+                "body": body_bytes,
             }
 
     async def _forward_via_http(
@@ -103,12 +112,12 @@ class Forwarder:
         path: str,
         headers: Dict[str, str],
         query_params: Dict[str, str],
-        body: Optional[str],
+        body: Optional[bytes],
     ) -> Dict[str, Any]:
         url = public_address.rstrip("/") + path
-        response = await self._client.request(method, url, headers=headers, params=query_params, content=body or "")
+        response = await self._client.request(method, url, headers=headers, params=query_params, content=body or b"")
         return {
             "status_code": response.status_code,
             "headers": {k: v for k, v in response.headers.items()},
-            "body": response.text,
+            "body": response.content,
         }

@@ -93,7 +93,6 @@ async def relay_request(agent_id: str, path: str, request: Request):
         raise HTTPException(status_code=http_status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Server not configured")
 
     body_bytes = await request.body()
-    body_text = body_bytes.decode("utf-8", errors="replace") if body_bytes else None
     headers = {k: v for k, v in request.headers.items()}
     query_params = dict(request.query_params)
 
@@ -103,7 +102,7 @@ async def relay_request(agent_id: str, path: str, request: Request):
         path=f"/{path}",
         headers=headers,
         query_params=query_params,
-        body=body_text,
+        body=body_bytes or None,
     )
 
     response_headers = {k: v for k, v in result["headers"].items() if k.lower() not in {"content-length", "transfer-encoding", "connection"}}
