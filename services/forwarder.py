@@ -32,11 +32,14 @@ class Forwarder:
         headers = headers or {}
         headers["X-VPS-Auth"] = self.settings.vps.agent_shared_secret
 
+        if self.settings.vps.allow_direct_agent_forwarding and agent.public_address:
+            try:
+                return await self._forward_via_http(agent.public_address, method, path, headers, query_params or {}, body)
+            except httpx.RequestError:
+                pass
+
         if agent.websocket is not None:
             return await self._forward_via_websocket(agent, method, path, headers, query_params or {}, body)
-
-        if self.settings.vps.allow_direct_agent_forwarding and agent.public_address:
-            return await self._forward_via_http(agent.public_address, method, path, headers, query_params or {}, body)
 
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Agent is not connected")
 

@@ -1,5 +1,7 @@
+import asyncio
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from unittest.mock import AsyncMock
 
 from fastapi.testclient import TestClient
 
@@ -34,6 +36,28 @@ def start_local_server():
 
 
 client = TestClient(app)
+
+
+def test_forwarder_prefers_direct_http_when_available(monkeypatch):
+    from services.agent_registry import AgentConnection
+    from services.forwarder import Forwarder
+    from services.settings import Settings, VPSSettings
+
+    settings = Settings(vps=VPSSettings(api_keys=["supersecret-client-key"], agent_shared_secret="supersecret-agent-token", allow_direct_agent_forwarding=True))
+    registry = AsyncMock()
+    agent = AgentConnection(agent_id="prefers-http", public_address="http://127.0.0.1:1234")
+    agent.websocket = object()
+    registry.get_agent.return_value = agent
+
+    forwarder = Forwarder(settings=settings, registry=registry)
+    forwarder._forward_via_http = AsyncMock(return_value={"status_code": 200, "headers": {}, "body": b"ok"})
+    forwarder._forward_via_websocket = AsyncMock(return_value={"status_code": 500, "headers": {}, "body": b"bad"})
+
+    result = asyncio.run(forwarder.forward("prefers-http", "GET", "/test", {}, {}, None))
+
+    assert result["status_code"] == 200
+    forwarder._forward_via_http.assert_awaited_once()
+    forwarder._forward_via_websocket.assert_not_awaited()
 
 
 def test_forward_to_registered_agent_direct_http():
