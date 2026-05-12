@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from unittest.mock import AsyncMock
@@ -124,4 +125,21 @@ def test_encode_body_for_websocket_preserves_json_text():
     payload = b'{"title":"Alert","message":"Screenshot saved successfully"}'
     result = forwarder._encode_body_for_websocket(payload)
 
-    assert result == {"body": payload.decode("utf-8")}
+    assert result == {"body": payload.decode("utf-8"), "body_encoding": "utf-8"}
+
+
+def test_encode_body_for_websocket_base64_encodes_binary():
+    from services.forwarder import Forwarder
+    from services.settings import Settings, VPSSettings
+    from services.agent_registry import AgentRegistry
+
+    settings = Settings(vps=VPSSettings(api_keys=["supersecret-client-key"], agent_shared_secret="supersecret-agent-token", allow_direct_agent_forwarding=False))
+    forwarder = Forwarder(settings=settings, registry=AgentRegistry())
+
+    payload = b"\x00\x01\x02\xff"
+    result = forwarder._encode_body_for_websocket(payload)
+
+    assert result == {
+        "body": base64.b64encode(payload).decode("ascii"),
+        "body_encoding": "base64",
+    }

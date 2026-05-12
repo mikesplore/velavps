@@ -54,11 +54,11 @@ class Forwarder:
             decoded = body.decode("utf-8")
         except UnicodeDecodeError:
             return {
-                "body": base64.b64encode(body).decode("utf-8"),
+                "body": base64.b64encode(body).decode("ascii"),
                 "body_encoding": "base64",
             }
 
-        return {"body": decoded}
+        return {"body": decoded, "body_encoding": "utf-8"}
 
     async def _forward_via_websocket(
         self,
@@ -104,7 +104,16 @@ class Forwarder:
                 raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Invalid agent response")
 
             body_value = response.get("body", "")
-            if isinstance(body_value, str):
+            body_encoding = response.get("body_encoding")
+
+            if body_encoding == "base64":
+                try:
+                    body_bytes = base64.b64decode(body_value, validate=True)
+                except (binascii.Error, ValueError):
+                    raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Invalid body encoding from agent")
+            elif body_encoding == "utf-8":
+                body_bytes = body_value.encode("utf-8")
+            elif isinstance(body_value, str):
                 try:
                     body_bytes = base64.b64decode(body_value, validate=True)
                 except (binascii.Error, ValueError):
