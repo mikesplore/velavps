@@ -2,7 +2,7 @@ vps:
   host: 0.0.0.0
   port: 8000
   api_keys:
-    - supersecret-client-key
+    - Mikesplore2030!!!
   agent_shared_secret: supersecret-agent-token
   allow_direct_agent_forwarding: true
   default_agent_timeout_seconds: 20
