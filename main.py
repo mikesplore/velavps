@@ -1,6 +1,9 @@
 from pathlib import Path
+from datetime import datetime, timezone
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from slowapi import Limiter
 from slowapi.middleware import SlowAPIMiddleware
@@ -27,6 +30,57 @@ app.include_router(relay_router)
 
 class HealthResponse(BaseModel):
     status: str
+
+
+class ErrorResponse(BaseModel):
+    success: bool = False
+    statusCode: int
+    message: str
+    timestamp: str
+
+
+def get_timestamp():
+    """Get current timestamp in ISO format with microseconds and Z suffix"""
+    return datetime.now(timezone.utc).isoformat(timespec='microseconds') + 'Z'
+
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={
+            "success": False,
+            "statusCode": exc.status_code,
+            "message": exc.detail,
+            "timestamp": get_timestamp(),
+        },
+    )
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    return JSONResponse(
+        status_code=422,
+        content={
+            "success": False,
+            "statusCode": 422,
+            "message": "Validation Error",
+            "timestamp": get_timestamp(),
+        },
+    )
+
+
+@app.exception_handler(Exception)
+async def general_exception_handler(request: Request, exc: Exception):
+    return JSONResponse(
+        status_code=500,
+        content={
+            "success": False,
+            "statusCode": 500,
+            "message": "Internal Server Error",
+            "timestamp": get_timestamp(),
+        },
+    )
 
 
 @app.get("/health", response_model=HealthResponse)
