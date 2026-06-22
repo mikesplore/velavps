@@ -39,7 +39,15 @@ class Forwarder:
                 pass
 
         if agent.websocket is not None:
-            return await self._forward_via_websocket(agent, method, path, headers, query_params or {}, body)
+            try:
+                return await self._forward_via_websocket(agent, method, path, headers, query_params or {}, body)
+            except Exception as e:
+                # If websocket forwarding fails, don't immediately give up if there's a chance to reconnect
+                # or if it was just a transient issue. For now, we log and re-raise or handle.
+                # But wait, if the websocket is actually closed, we should clear it.
+                if isinstance(e, (RuntimeError, asyncio.TimeoutError)):
+                     raise
+                raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Websocket forwarding error: {str(e)}")
 
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Agent is not connected")
 
