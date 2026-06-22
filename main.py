@@ -70,3 +70,11 @@ async def general_exception_handler(request: Request, exc: Exception):
 @app.get("/health", response_model=HealthResponse)
 async def health():
     return {"status": "ok"}
+
+
+if __name__ == "__main__":
+    import uvicorn
+
+    host = settings.vps.host
+    port = settings.vps.port
+    uvicorn.run(app, host=host, port=port)
