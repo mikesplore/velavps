@@ -9,8 +9,8 @@ from slowapi import Limiter
 from slowapi.middleware import SlowAPIMiddleware
 from slowapi.util import get_remote_address
 
-from app.services.settings import load_settings
-from app.services.state import initialize_state
+from app.services.vela_settings import load_settings
+from app.services.vela_state import initialize_state
 
 BASE_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = BASE_DIR / "config.yaml"
@@ -18,7 +18,7 @@ CONFIG_PATH = BASE_DIR / "config.yaml"
 settings = load_settings(CONFIG_PATH)
 initialize_state(settings)
 
-from app.routers.relay import router as relay_router
+from app.routers.vela_relay import router as relay_router
 
 app = FastAPI(title="VPS Relay Service", version="0.1.0")
 limiter = Limiter(key_func=get_remote_address, default_limits=[settings.vps.rate_limit])

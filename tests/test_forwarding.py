@@ -40,9 +40,9 @@ client = TestClient(app)
 
 
 def test_forwarder_prefers_direct_http_when_available(monkeypatch):
-    from services.agent_registry import AgentConnection
-    from services.forwarder import Forwarder
-    from services.settings import Settings, VPSSettings
+    from services.vela_agent_registry import AgentConnection
+    from services.vela_forwarder import Forwarder
+    from services.vela_settings import Settings, VPSSettings
 
     settings = Settings(vps=VPSSettings(api_keys=["supersecret-client-key"], agent_shared_secret="supersecret-agent-token", allow_direct_agent_forwarding=True))
     registry = AsyncMock()
@@ -115,9 +115,9 @@ def test_forward_preserves_binary_response_direct_http():
 
 
 def test_encode_body_for_websocket_preserves_json_text():
-    from services.forwarder import Forwarder
-    from services.settings import Settings, VPSSettings
-    from services.agent_registry import AgentRegistry
+    from services.vela_forwarder import Forwarder
+    from services.vela_settings import Settings, VPSSettings
+    from services.vela_agent_registry import AgentRegistry
 
     settings = Settings(vps=VPSSettings(api_keys=["supersecret-client-key"], agent_shared_secret="supersecret-agent-token", allow_direct_agent_forwarding=False))
     forwarder = Forwarder(settings=settings, registry=AgentRegistry())
@@ -129,9 +129,9 @@ def test_encode_body_for_websocket_preserves_json_text():
 
 
 def test_encode_body_for_websocket_base64_encodes_binary():
-    from services.forwarder import Forwarder
-    from services.settings import Settings, VPSSettings
-    from services.agent_registry import AgentRegistry
+    from services.vela_forwarder import Forwarder
+    from services.vela_settings import Settings, VPSSettings
+    from services.vela_agent_registry import AgentRegistry
 
     settings = Settings(vps=VPSSettings(api_keys=["supersecret-client-key"], agent_shared_secret="supersecret-agent-token", allow_direct_agent_forwarding=False))
     forwarder = Forwarder(settings=settings, registry=AgentRegistry())

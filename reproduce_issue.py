@@ -3,7 +3,7 @@ import json
 import websockets
 from fastapi.testclient import TestClient
 from main import app
-import services.state as state
+import services.vela_state as state
 
 client = TestClient(app)
 
@@ -45,7 +45,7 @@ async def reproduce_500():
                 "body_encoding": "utf-8"
             }
             # We need to push this response back to the agent's pending_responses
-            # In real life, this happens in routers/relay.py agent_tunnel loop.
+            # In real life, this happens in routers/vela_relay.py agent_tunnel loop.
             async with agent.pending_lock:
                 future = agent.pending_responses.get(message["request_id"])
                 if future:
