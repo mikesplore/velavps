@@ -19,13 +19,15 @@ settings = load_settings(CONFIG_PATH)
 initialize_state(settings)
 
 from app.routers.vela_relay import router as relay_router
+from app.routers.vela_admin import router as admin_router
 
-app = FastAPI(title="VPS Relay Service", version="0.1.0")
+app = FastAPI(title="Vela Multi-Tenant Relay", version="2.0.0")
 limiter = Limiter(key_func=get_remote_address, default_limits=[settings.vps.rate_limit])
 app.state.limiter = limiter
 app.add_middleware(SlowAPIMiddleware)
 
 app.include_router(relay_router)
+app.include_router(admin_router)
 
 
 class HealthResponse(BaseModel):
