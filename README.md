@@ -19,26 +19,25 @@ It is designed to accept public client requests, authenticate them, and forward 
 python -m pip install -r requirements.txt
 ```
 
-2. Configure `config.yaml`.
-
-3. Start the app:
+2. Start the app:
 
 ```bash
 uvicorn main:app --host 0.0.0.0 --port 8000
 ```
 
-Alternative: use the included script to create a virtual environment, install dependencies, and launch the app.
+Alternative: use the included script to create a virtual environment, install dependencies, and launch the app:
 
 ```bash
 ./start.sh
 ```
 
-4. Use `GET /health` to verify availability.
+3. Use `GET /health` to verify availability.
 
 ## API
 
 - `GET /health`
 - `POST /register`
+- `POST /agents/{agent_id}/ws-token`
 - `WebSocket /tunnel?agent_id={agent_id}&token={ws_token}`
 - `POST /relay/{agent_id}/{path}`
 
