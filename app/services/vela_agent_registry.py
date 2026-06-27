@@ -7,6 +7,8 @@ from typing import Any, Dict, Optional
 
 from fastapi import WebSocket
 
+from app.services.vela_database import VelaDatabase
+
 
 @dataclass
 class AgentConnection:
@@ -51,9 +53,10 @@ class AgentConnection:
 
 
 class AgentRegistry:
-    def __init__(self) -> None:
+    def __init__(self, db: VelaDatabase | None = None) -> None:
         self._agents: Dict[str, AgentConnection] = {}
         self._lock = asyncio.Lock()
+        self._db = db
 
     async def register_agent(
         self,
@@ -108,7 +111,10 @@ class AgentRegistry:
                 return
             agent.websocket = None
             agent.connected = False
-            agent.clear_ws_token()
+            # Keep ws_token intact for reconnection; do NOT clear it here
+            # Only clear in-memory token reference, but keep DB token for reissue
+            agent.ws_token = None
+            agent.ws_token_expiry = None
             async with agent.pending_lock:
                 for future in agent.pending_responses.values():
                     if not future.done():
@@ -125,14 +131,54 @@ class AgentRegistry:
             agent.ws_token_expiry = expiry
             agent.status = "active"
             agent.touch()
+            # Persist token to database for reconnection
+            if self._db:
+                self._db.store_ws_token(agent_id, token, expiry)
             return agent
 
     async def validate_agent_ws_token(self, agent_id: str, token: str) -> bool:
         async with self._lock:
             agent = self._agents.get(agent_id)
+            now = datetime.now(timezone.utc)
+            
+            # If agent not in memory, try loading from database
+            if agent is None and self._db:
+                token_data = self._db.get_ws_token(agent_id)
+                if token_data:
+                    token = token_data["token"]
+                    expiry = token_data["expiry"]
+                    if expiry > now:
+                        # Load agent and set token for this session
+                        agent = AgentConnection(agent_id=agent_id)
+                        agent.ws_token = token
+                        agent.ws_token_expiry = expiry
+                        self._agents[agent_id] = agent
+                        return True
+                    else:
+                        # Clean up expired token
+                        self._db.delete_ws_token(agent_id)
+                        return False
+                return False
+            
             if not agent:
                 return False
             valid = agent.validate_ws_token(token)
-            if not valid and agent.ws_token_expiry and agent.ws_token_expiry <= datetime.now(timezone.utc):
-                agent.clear_ws_token()
+            if not valid:
+                # In-memory token is invalid, try database as fallback
+                if self._db:
+                    token_data = self._db.get_ws_token(agent_id)
+                    if token_data:
+                        db_token = token_data["token"]
+                        db_expiry = token_data["expiry"]
+                        if db_expiry > now and db_token == token:
+                            # Restore token to agent for this session
+                            agent.ws_token = db_token
+                            agent.ws_token_expiry = db_expiry
+                            return True
+                        else:
+                            self._db.delete_ws_token(agent_id)
+                            return False
+                # Clean up expired in-memory token
+                if agent.ws_token_expiry and agent.ws_token_expiry <= now:
+                    agent.clear_ws_token()
             return valid

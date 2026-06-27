@@ -96,6 +96,17 @@ class VelaDatabase:
 
             -- Index for listing agents by secret
             CREATE INDEX IF NOT EXISTS idx_agents_secret ON agents(secret);
+
+            -- WebSocket tokens table: persistent token storage for reconnection
+            CREATE TABLE IF NOT EXISTS ws_tokens (
+                agent_id TEXT PRIMARY KEY REFERENCES agents(agent_id) ON DELETE CASCADE,
+                token TEXT NOT NULL,
+                expiry TIMESTAMP NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+
+            -- Index for cleaning expired tokens
+            CREATE INDEX IF NOT EXISTS idx_ws_tokens_expiry ON ws_tokens(expiry);
         """)
         conn.commit()
 
@@ -321,6 +332,55 @@ class VelaDatabase:
             """,
             (agent_id, secret)
         )
+
+    # ─── WebSocket Token Persistence ───
+
+    def store_ws_token(self, agent_id: str, token: str, expiry: datetime) -> bool:
+        """Store or update a WebSocket token for reconnection."""
+        expiry_str = expiry.isoformat()
+        conn = self._get_connection()
+        conn.execute(
+            """
+            INSERT INTO ws_tokens (agent_id, token, expiry)
+            VALUES (?, ?, ?)
+            ON CONFLICT(agent_id) DO UPDATE SET
+                token = excluded.token,
+                expiry = excluded.expiry,
+                created_at = CURRENT_TIMESTAMP
+            """,
+            (agent_id, token, expiry_str)
+        )
+        return True
+
+    def get_ws_token(self, agent_id: str) -> Optional[Dict[str, Any]]:
+        """Get the current WebSocket token for an agent."""
+        conn = self._get_connection()
+        row = conn.execute(
+            "SELECT token, expiry FROM ws_tokens WHERE agent_id = ?",
+            (agent_id,)
+        ).fetchone()
+        if not row:
+            return None
+        expiry_str = row["expiry"]
+        expiry = datetime.fromisoformat(expiry_str) if expiry_str else datetime.now(timezone.utc)
+        return {"token": row["token"], "expiry": expiry}
+
+    def delete_ws_token(self, agent_id: str) -> bool:
+        """Delete a WebSocket token after use or on disconnect."""
+        conn = self._get_connection()
+        result = conn.execute(
+            "DELETE FROM ws_tokens WHERE agent_id = ?",
+            (agent_id,)
+        )
+        return result.rowcount > 0
+
+    def cleanup_expired_ws_tokens(self) -> int:
+        """Remove expired tokens. Returns count of deleted rows."""
+        conn = self._get_connection()
+        result = conn.execute(
+            "DELETE FROM ws_tokens WHERE expiry <= CURRENT_TIMESTAMP"
+        )
+        return result.rowcount
 
 
 class ConflictError(Exception):

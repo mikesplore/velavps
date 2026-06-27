@@ -186,3 +186,29 @@ async def get_agent(agent_id: str, secret: str = Depends(get_secret)):
         raise HTTPException(status_code=http_status.HTTP_404_NOT_FOUND, detail="Agent not found")
     
     return {"agent": agent.as_dict()}
+
+
+@router.post("/agents/{agent_id}/ws-token")
+async def reissue_ws_token(agent_id: str, secret: str = Depends(get_secret)):
+    """
+    Re-issue a WebSocket token for an existing agent.
+    Returns a fresh short-lived token (60s) for connecting the tunnel.
+    Use this when reconnecting after a disconnect.
+    """
+    if state.db is None or state.registry is None:
+        raise HTTPException(status_code=http_status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Server not configured")
+    
+    # Verify agent exists and belongs to this secret
+    agent = state.db.get_agent(agent_id, secret)
+    if not agent:
+        raise HTTPException(status_code=http_status.HTTP_404_NOT_FOUND, detail="Agent not found")
+    
+    # Generate new token
+    token = secrets.token_urlsafe(32)
+    expiry = datetime.now(timezone.utc) + timedelta(seconds=60)
+    await state.registry.set_agent_ws_token(agent_id, token, expiry)
+    
+    return {
+        "ws_token": token,
+        "expires_at": expiry.isoformat() + "Z",
+    }

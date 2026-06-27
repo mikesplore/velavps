@@ -13,4 +13,5 @@ def initialize_state(settings_obj: Settings) -> None:
     global settings, forwarder, db
     settings = settings_obj
     db = VelaDatabase()  # Initialize database
+    registry._db = db  # Give registry access to DB for token persistence
     forwarder = Forwarder(settings=settings_obj, registry=registry, db=db)
