@@ -201,7 +201,7 @@ async def reissue_ws_token(agent_id: str, secret: str = Depends(get_secret)):
     # Verify agent exists and belongs to this secret
     agent = state.db.get_agent(agent_id, secret)
     if not agent:
-        raise HTTPException(status_code=http_status.HTTP_404_NOT_FOUND, detail="Agent not found")
+        raise HTTPException(status_code=http_status.HTTP_404_NOT_FOUND, detail="Agent not found in the database")
     
     # Generate new token
     token = secrets.token_urlsafe(32)
