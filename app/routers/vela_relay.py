@@ -17,7 +17,6 @@ class RegisterRequest(BaseModel):
     agent_id: str
     public_address: str | None = None
     metadata: dict | None = None
-    regenerate_secret: bool = False
 
 
 class RelayRequest(BaseModel):
@@ -30,42 +29,34 @@ class RelayRequest(BaseModel):
 @router.post("/register")
 async def register_agent(payload: RegisterRequest):
     """
-    Register or update an agent.
+    Register a new agent. This is a one-time operation per agent_id.
     
     The server auto-generates a secret for the agent on first registration.
-    This secret is stored in the database and returned to the agent.
+    This secret is stored in the database and returned to the agent ONCE.
     The agent must use this secret (via X-Secret header) for subsequent
     requests (heartbeat, relay, etc.).
     
-    Collision handling:
-    - If agent_id is taken by a different secret → 409 Conflict
-    - If agent_id is owned by this secret → update (re-connection)
-    
-    Password change:
-    - Set regenerate_secret=true to get a new secret (old one becomes invalid)
+    NOTE: This endpoint cannot be called again with the same agent_id.
+    - If agent_id is already registered → 409 Conflict
+    - If you lost the secret, you must use a different agent_id
     """
     if state.settings is None or state.db is None:
         raise HTTPException(status_code=http_status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Server not configured")
 
-    # Check if this agent_id already exists and belongs to an existing secret
+    # Check if this agent_id already exists (NO re-registration allowed)
     existing_agent = state.db.get_agent_by_id(payload.agent_id)
     if existing_agent:
-        if payload.regenerate_secret:
-            # User wants a new secret — remove old agent record and generate fresh
-            old_secret = existing_agent.secret
-            state.db.remove_agent(payload.agent_id, old_secret)
-            secret = secrets.token_urlsafe(32)
-            state.db.create_secret(secret)
-        else:
-            # Normal re-registration — reuse existing secret
-            secret = existing_agent.secret
-    else:
-        # New agent — generate a fresh secret and store it
-        secret = secrets.token_urlsafe(32)
-        state.db.create_secret(secret)
+        raise HTTPException(
+            status_code=http_status.HTTP_409_CONFLICT,
+            detail=f"Agent ID '{payload.agent_id}' is already registered. Each agent_id can only be registered once. Use a different agent_id."
+        )
+
+    # New agent — generate a fresh secret and store it
+    secret = secrets.token_urlsafe(32)
+    state.db.create_secret(secret)
 
     try:
-        # Register agent with database (handles collision detection)
+        # Register agent with database
         agent = state.db.register_agent(
             agent_id=payload.agent_id,
             secret=secret,
@@ -80,9 +71,10 @@ async def register_agent(payload: RegisterRequest):
     # Generate WebSocket token for this agent
     token = secrets.token_urlsafe(32)
     expiry = datetime.now(timezone.utc) + timedelta(seconds=60)
-    await state.registry.set_websocket_connection(agent.agent_id, None)  # Update in-memory state
+    await state.registry.set_websocket_connection(agent.agent_id, None)
     await state.registry.set_agent_ws_token(agent.agent_id, token, expiry)
 
+    # Return secret ONLY on first registration
     return {
         "agent": agent.as_dict(),
         "secret": secret,
