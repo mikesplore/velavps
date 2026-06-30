@@ -120,6 +120,42 @@ async def agent_tunnel(websocket: WebSocket, agent_id: str, token: str | None = 
         await state.registry.remove_websocket_connection(agent_id)
 
 
+@router.get("/relay/{agent_id}/callback")
+async def spotify_callback(agent_id: str, request: Request):
+    """
+    Public callback endpoint for OAuth providers (e.g. Spotify).
+    
+    This endpoint intentionally skips authentication because OAuth callbacks
+    come from external providers and cannot carry relay auth headers.
+    Security is provided by the short-lived, single-use `code` parameter
+    from the OAuth flow.
+    
+    Forwards the callback (with all query params including `code`) to the agent.
+    """
+    if state.settings is None or state.db is None or state.forwarder is None:
+        raise HTTPException(status_code=http_status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Server not configured")
+
+    # Verify agent exists (no secret check — public callback)
+    agent = state.db.get_agent_by_id(agent_id)
+    if not agent:
+        raise HTTPException(status_code=http_status.HTTP_404_NOT_FOUND, detail="Agent not found")
+
+    query_params = dict(request.query_params)
+    callback_path = "/callback"
+
+    result = await state.forwarder.forward(
+        agent_id=agent_id,
+        method="GET",
+        path=callback_path,
+        headers={},
+        query_params=query_params,
+        body=None,
+    )
+
+    response_headers = {k: v for k, v in result["headers"].items() if k.lower() not in {"content-length", "transfer-encoding", "connection"}}
+    return Response(content=result["body"], status_code=result["status_code"], headers=response_headers)
+
+
 @router.api_route(
     "/relay/{agent_id}/{path:path}",
     methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"],
