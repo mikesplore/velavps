@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from slowapi import Limiter
@@ -22,6 +23,16 @@ from app.routers.vela_relay import router as relay_router
 from app.routers.vela_admin import router as admin_router
 
 app = FastAPI(title="Vela Multi-Tenant Relay", version="2.0.0")
+
+# CORS middleware — must be added before other middleware to intercept preflight OPTIONS requests
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"],
+    allow_headers=["*", "x-secret", "X-Secret"],
+)
+
 limiter = Limiter(key_func=get_remote_address, default_limits=[settings.vps.rate_limit])
 app.state.limiter = limiter
 app.add_middleware(SlowAPIMiddleware)
