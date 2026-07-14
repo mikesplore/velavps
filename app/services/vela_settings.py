@@ -31,6 +31,9 @@ class VPSSettings(BaseModel):
     allow_direct_agent_forwarding: bool = True
     default_agent_timeout_seconds: int = 20
     rate_limit: str = "100/minute"
+    legacy_registration_enabled: bool = True
+    pairing_code_ttl_seconds: int = 600
+    activation_token_ttl_seconds: int = 180
     # Admin API keys – for management endpoints (optional)
     api_keys: List[str] = []
 

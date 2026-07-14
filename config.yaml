@@ -4,3 +4,6 @@ vps:
   allow_direct_agent_forwarding: true
   default_agent_timeout_seconds: 20
   rate_limit: 100/minute
+  legacy_registration_enabled: true
+  pairing_code_ttl_seconds: 600
+  activation_token_ttl_seconds: 180

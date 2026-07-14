@@ -1,5 +1,8 @@
-import base64
+import hashlib
+import logging
 import secrets
+import threading
+import time
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
@@ -11,6 +14,35 @@ from app.services import vela_state as state
 from app.services.vela_database import ConflictError
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
+API_VERSION = "2026-07-pairing-v1"
+
+
+class InMemoryRateLimiter:
+    def __init__(self):
+        self._events: dict[str, list[float]] = {}
+        self._lock = threading.Lock()
+
+    def hit(self, key: str, max_hits: int, window_seconds: int) -> bool:
+        now = time.time()
+        cutoff = now - window_seconds
+        with self._lock:
+            timestamps = [ts for ts in self._events.get(key, []) if ts >= cutoff]
+            if len(timestamps) >= max_hits:
+                self._events[key] = timestamps
+                return False
+            timestamps.append(now)
+            self._events[key] = timestamps
+            return True
+
+
+rate_limiter = InMemoryRateLimiter()
+metrics = {
+    "register_started": 0,
+    "pairing_completed": 0,
+    "pairing_invalid_or_expired": 0,
+    "agent_activated": 0,
+}
 
 
 class RegisterRequest(BaseModel):
@@ -24,6 +56,119 @@ class RelayRequest(BaseModel):
     headers: dict | None = None
     query_params: dict | None = None
     body: str | None = None
+
+
+class RegisterStartRequest(BaseModel):
+    agent_name: str
+    device_info: dict | None = None
+    tenant_hint: str | None = None
+    agent_id: str | None = None
+
+
+class PairCompleteRequest(BaseModel):
+    pairing_code: str
+    agent_label: str | None = None
+
+
+class ActivateRequest(BaseModel):
+    agent_id: str
+    activation_token: str
+
+
+def _request_ip(request: Request) -> str:
+    return request.client.host if request.client else "unknown"
+
+
+@router.post("/agents/register/start")
+async def register_start(payload: RegisterStartRequest, request: Request):
+    if state.settings is None or state.db is None:
+        raise HTTPException(status_code=http_status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Server not configured")
+
+    fingerprint = (payload.device_info or {}).get("device_fingerprint", "none")
+    rate_key = f"register_start:{_request_ip(request)}:{fingerprint}"
+    if not rate_limiter.hit(rate_key, max_hits=20, window_seconds=60):
+        raise HTTPException(status_code=http_status.HTTP_429_TOO_MANY_REQUESTS, detail="rate_limit_exceeded")
+
+    session = state.db.create_or_refresh_pairing_session(
+        agent_name=payload.agent_name,
+        device_info=payload.device_info,
+        tenant_hint=payload.tenant_hint,
+        pairing_ttl_seconds=state.settings.vps.pairing_code_ttl_seconds,
+        existing_agent_id=payload.agent_id,
+    )
+    metrics["register_started"] += 1
+    logger.info("agent_register_started agent_id=%s", session["agent_id"])
+    return {
+        "api_version": API_VERSION,
+        "agent_id": session["agent_id"],
+        "pairing_code": session["pairing_code"],
+        "pairing_expires_in": session["pairing_expires_in"],
+        "pairing_qr_payload": f"vela://pair?code={session['pairing_code']}&agent_id={session['agent_id']}",
+    }
+
+
+@router.get("/agents/register/status")
+async def register_status(agent_id: str):
+    if state.settings is None or state.db is None:
+        raise HTTPException(status_code=http_status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Server not configured")
+    try:
+        status_payload = state.db.get_registration_status(
+            agent_id=agent_id,
+            activation_ttl_seconds=state.settings.vps.activation_token_ttl_seconds,
+        )
+    except ValueError:
+        raise HTTPException(status_code=http_status.HTTP_404_NOT_FOUND, detail="Agent not found")
+    return {"api_version": API_VERSION, **status_payload}
+
+
+@router.post("/pair/complete", dependencies=[Depends(get_secret)])
+async def pair_complete(payload: PairCompleteRequest, request: Request, secret: str = Depends(get_secret)):
+    if state.db is None:
+        raise HTTPException(status_code=http_status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Server not configured")
+
+    pair_key = f"pair_complete:{secret}:{hashlib.sha1(payload.pairing_code.encode('utf-8')).hexdigest()[:8]}"
+    user_key = f"pair_complete_user:{secret}"
+    if not rate_limiter.hit(pair_key, max_hits=6, window_seconds=300) or not rate_limiter.hit(user_key, max_hits=30, window_seconds=300):
+        raise HTTPException(status_code=http_status.HTTP_429_TOO_MANY_REQUESTS, detail="rate_limit_exceeded")
+
+    try:
+        result = state.db.complete_pairing(payload.pairing_code, secret, payload.agent_label)
+    except ValueError:
+        metrics["pairing_invalid_or_expired"] += 1
+        logger.warning("pairing invalid_or_expired_code ip=%s", _request_ip(request))
+        raise HTTPException(status_code=http_status.HTTP_400_BAD_REQUEST, detail="invalid_or_expired_code")
+
+    metrics["pairing_completed"] += 1
+    logger.info("pairing_completed agent_id=%s", result["agent_id"])
+    return {"status": "paired", "agent_id": result["agent_id"], "idempotent": result["idempotent"]}
+
+
+@router.post("/agents/register/activate")
+async def register_activate(payload: ActivateRequest):
+    if state.settings is None or state.db is None:
+        raise HTTPException(status_code=http_status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Server not configured")
+    try:
+        result = state.db.activate_agent(
+            payload.agent_id,
+            payload.activation_token,
+            ttl_seconds=state.settings.vps.activation_token_ttl_seconds,
+        )
+    except ValueError:
+        raise HTTPException(status_code=http_status.HTTP_400_BAD_REQUEST, detail="invalid_activation_token")
+    metrics["agent_activated"] += 1
+    logger.info("agent_activated agent_id=%s", payload.agent_id)
+    return {"api_version": API_VERSION, **result}
+
+
+@router.post("/agents/{agent_id}/revoke", dependencies=[Depends(get_secret)])
+async def revoke_agent(agent_id: str, secret: str = Depends(get_secret)):
+    if state.db is None:
+        raise HTTPException(status_code=http_status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Server not configured")
+    owned_agent = state.db.get_agent(agent_id, secret)
+    if not owned_agent:
+        raise HTTPException(status_code=http_status.HTTP_404_NOT_FOUND, detail="Agent not found")
+    revoked_count = state.db.revoke_agent_credentials(agent_id, revoked_by=secret)
+    return {"agent_id": agent_id, "revoked_credentials": revoked_count}
 
 
 @router.post("/register")
@@ -42,6 +187,11 @@ async def register_agent(payload: RegisterRequest):
     """
     if state.settings is None or state.db is None:
         raise HTTPException(status_code=http_status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Server not configured")
+    if not state.settings.vps.legacy_registration_enabled:
+        raise HTTPException(
+            status_code=http_status.HTTP_410_GONE,
+            detail="legacy_registration_disabled",
+        )
 
     # Check if this agent_id already exists (NO re-registration allowed)
     existing_agent = state.db.get_agent_by_id(payload.agent_id)
@@ -76,6 +226,7 @@ async def register_agent(payload: RegisterRequest):
 
     # Return secret ONLY on first registration
     return {
+        "api_version": API_VERSION,
         "agent": agent.as_dict(),
         "secret": secret,
         "ws_token": token,
