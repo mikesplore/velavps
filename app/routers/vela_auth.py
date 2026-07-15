@@ -6,6 +6,7 @@ Implements secret-as-identity model:
 - Secret is used for both agent registration and client API access
 - Secret is passed via X-Secret header
 """
+
 from fastapi import Header, HTTPException, status
 
 from app.services import vela_state as state

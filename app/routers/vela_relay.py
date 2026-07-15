@@ -67,6 +67,7 @@ class RegisterStartRequest(BaseModel):
 
 class PairCompleteRequest(BaseModel):
     pairing_code: str
+    pairing_pin: str
     agent_label: str | None = None
 
 
@@ -102,6 +103,7 @@ async def register_start(payload: RegisterStartRequest, request: Request):
         "api_version": API_VERSION,
         "agent_id": session["agent_id"],
         "pairing_code": session["pairing_code"],
+        "pairing_pin": session["pairing_pin"],
         "pairing_expires_in": session["pairing_expires_in"],
         "pairing_qr_payload": f"vela://pair?code={session['pairing_code']}&agent_id={session['agent_id']}",
     }
@@ -121,18 +123,18 @@ async def register_status(agent_id: str):
     return {"api_version": API_VERSION, **status_payload}
 
 
-@router.post("/pair/complete", dependencies=[Depends(get_secret)])
-async def pair_complete(payload: PairCompleteRequest, request: Request, secret: str = Depends(get_secret)):
+@router.post("/pair/complete")
+async def pair_complete(payload: PairCompleteRequest, request: Request):
     if state.db is None:
         raise HTTPException(status_code=http_status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Server not configured")
 
-    pair_key = f"pair_complete:{secret}:{hashlib.sha1(payload.pairing_code.encode('utf-8')).hexdigest()[:8]}"
-    user_key = f"pair_complete_user:{secret}"
-    if not rate_limiter.hit(pair_key, max_hits=6, window_seconds=300) or not rate_limiter.hit(user_key, max_hits=30, window_seconds=300):
+    pair_key = f"pair_complete:{_request_ip(request)}:{hashlib.sha1(payload.pairing_code.encode('utf-8')).hexdigest()[:8]}"
+    ip_key = f"pair_complete_ip:{_request_ip(request)}"
+    if not rate_limiter.hit(pair_key, max_hits=8, window_seconds=300) or not rate_limiter.hit(ip_key, max_hits=50, window_seconds=300):
         raise HTTPException(status_code=http_status.HTTP_429_TOO_MANY_REQUESTS, detail="rate_limit_exceeded")
 
     try:
-        result = state.db.complete_pairing(payload.pairing_code, secret, payload.agent_label)
+        result = state.db.complete_pairing(payload.pairing_code, payload.pairing_pin, payload.agent_label)
     except ValueError:
         metrics["pairing_invalid_or_expired"] += 1
         logger.warning("pairing invalid_or_expired_code ip=%s", _request_ip(request))
@@ -140,7 +142,15 @@ async def pair_complete(payload: PairCompleteRequest, request: Request, secret: 
 
     metrics["pairing_completed"] += 1
     logger.info("pairing_completed agent_id=%s", result["agent_id"])
-    return {"status": "paired", "agent_id": result["agent_id"], "idempotent": result["idempotent"]}
+    relay_base_url = f"{str(request.base_url).rstrip('/')}/relay/{result['agent_id']}"
+    return {
+        "status": "paired",
+        "agent_id": result["agent_id"],
+        "relay_base_url": relay_base_url,
+        "idempotent": result["idempotent"],
+        "relay_secret": result["relay_secret"],
+        "relay_secret_shared": result["relay_secret_shared"],
+    }
 
 
 @router.post("/agents/register/activate")
@@ -153,7 +163,9 @@ async def register_activate(payload: ActivateRequest):
             payload.activation_token,
             ttl_seconds=state.settings.vps.activation_token_ttl_seconds,
         )
-    except ValueError:
+    except ValueError as exc:
+        if str(exc) == "secret_already_delivered":
+            raise HTTPException(status_code=http_status.HTTP_409_CONFLICT, detail="secret_already_delivered")
         raise HTTPException(status_code=http_status.HTTP_400_BAD_REQUEST, detail="invalid_activation_token")
     metrics["agent_activated"] += 1
     logger.info("agent_activated agent_id=%s", payload.agent_id)

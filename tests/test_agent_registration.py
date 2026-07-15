@@ -109,8 +109,10 @@ def test_pairing_happy_path_start_pair_activate():
     start_data = start.json()
     agent_id = start_data["agent_id"]
     pairing_code = start_data["pairing_code"]
+    pairing_pin = start_data["pairing_pin"]
     assert start_data["api_version"]
     assert start_data["pairing_expires_in"] > 0
+    assert pairing_pin
 
     pre_pair = client.get(f"/agents/register/status?agent_id={agent_id}")
     assert pre_pair.status_code == 200
@@ -118,11 +120,13 @@ def test_pairing_happy_path_start_pair_activate():
 
     pair = client.post(
         "/pair/complete",
-        json={"pairing_code": pairing_code, "agent_label": "Pixel 8"},
-        headers={"X-Secret": "user-secret-1"},
+        json={"pairing_code": pairing_code, "pairing_pin": pairing_pin, "agent_label": "Pixel 8"},
     )
     assert pair.status_code == 200
     assert pair.json()["status"] == "paired"
+    assert pair.json()["relay_base_url"].endswith(f"/relay/{agent_id}")
+    assert pair.json()["relay_secret"]
+    assert pair.json()["relay_secret_shared"] is False
 
     post_pair = client.get(f"/agents/register/status?agent_id={agent_id}")
     assert post_pair.status_code == 200
@@ -140,6 +144,7 @@ def test_pairing_happy_path_start_pair_activate():
     assert activate.status_code == 200
     activate_data = activate.json()
     assert activate_data["credential"]
+    assert activate_data["relay_secret"]
     assert "agent:relay" in activate_data["scopes"]
 
 
@@ -149,21 +154,44 @@ def test_pairing_code_single_use_and_invalid_code_response():
         json={"agent_name": "agent-single-use", "device_info": {"device_fingerprint": "xyz"}},
     )
     pairing_code = start.json()["pairing_code"]
+    pairing_pin = start.json()["pairing_pin"]
 
     ok = client.post(
         "/pair/complete",
-        json={"pairing_code": pairing_code},
-        headers={"X-Secret": "user-secret-2"},
+        json={"pairing_code": pairing_code, "pairing_pin": pairing_pin},
     )
     assert ok.status_code == 200
 
     reused_by_other_user = client.post(
         "/pair/complete",
-        json={"pairing_code": pairing_code},
-        headers={"X-Secret": "user-secret-3"},
+        json={"pairing_code": pairing_code, "pairing_pin": pairing_pin},
     )
     assert reused_by_other_user.status_code == 400
     assert reused_by_other_user.json()["message"] == "invalid_or_expired_code"
+
+
+def test_pairing_secret_is_shared_once_to_client():
+    start = client.post(
+        "/agents/register/start",
+        json={"agent_name": "agent-client-once", "device_info": {"device_fingerprint": "client-once"}},
+    )
+    pairing_code = start.json()["pairing_code"]
+    pairing_pin = start.json()["pairing_pin"]
+
+    first = client.post(
+        "/pair/complete",
+        json={"pairing_code": pairing_code, "pairing_pin": pairing_pin},
+    )
+    assert first.status_code == 200
+    assert first.json()["relay_secret"]
+    assert first.json()["relay_secret_shared"] is False
+
+    second = client.post(
+        "/pair/complete",
+        json={"pairing_code": pairing_code, "pairing_pin": pairing_pin},
+    )
+    assert second.status_code == 400
+    assert second.json()["message"] == "invalid_or_expired_code"
 
 
 def test_activation_token_is_one_time():
@@ -173,11 +201,11 @@ def test_activation_token_is_one_time():
     )
     agent_id = start.json()["agent_id"]
     pairing_code = start.json()["pairing_code"]
+    pairing_pin = start.json()["pairing_pin"]
 
     pair = client.post(
         "/pair/complete",
-        json={"pairing_code": pairing_code},
-        headers={"X-Secret": "user-secret-4"},
+        json={"pairing_code": pairing_code, "pairing_pin": pairing_pin},
     )
     assert pair.status_code == 200
 
@@ -196,3 +224,78 @@ def test_activation_token_is_one_time():
     )
     assert second.status_code == 400
     assert second.json()["message"] == "invalid_activation_token"
+
+
+def test_repair_rotates_relay_secret():
+    start = client.post(
+        "/agents/register/start",
+        json={"agent_name": "agent-rotate", "device_info": {"device_fingerprint": "fp-rotate"}},
+    )
+    agent_id = start.json()["agent_id"]
+    first_code = start.json()["pairing_code"]
+    first_pin = start.json()["pairing_pin"]
+    first_pair = client.post(
+        "/pair/complete",
+        json={"pairing_code": first_code, "pairing_pin": first_pin},
+    )
+    first_secret = first_pair.json()["relay_secret"]
+    assert first_secret
+
+    second_start = client.post(
+        "/agents/register/start",
+        json={
+            "agent_id": agent_id,
+            "agent_name": "agent-rotate",
+            "device_info": {"device_fingerprint": "fp-rotate"},
+        },
+    )
+    second_code = second_start.json()["pairing_code"]
+    second_pin = second_start.json()["pairing_pin"]
+    second_pair = client.post(
+        "/pair/complete",
+        json={"pairing_code": second_code, "pairing_pin": second_pin},
+    )
+    second_secret = second_pair.json()["relay_secret"]
+    assert second_secret
+    assert second_secret != first_secret
+
+
+def test_pair_complete_requires_pairing_pin():
+    start = client.post(
+        "/agents/register/start",
+        json={"agent_name": "agent-pin-check", "device_info": {"device_fingerprint": "pin-check"}},
+    )
+    pairing_code = start.json()["pairing_code"]
+    pairing_pin = start.json()["pairing_pin"]
+
+    missing_pin = client.post("/pair/complete", json={"pairing_code": pairing_code})
+    assert missing_pin.status_code == 422
+
+    bad_pin = client.post(
+        "/pair/complete",
+        json={"pairing_code": pairing_code, "pairing_pin": "000000"},
+    )
+    assert bad_pin.status_code == 400
+
+
+def test_pair_complete_locks_after_failed_pin_attempts():
+    start = client.post(
+        "/agents/register/start",
+        json={"agent_name": "agent-pin-lock", "device_info": {"device_fingerprint": "pin-lock"}},
+    )
+    pairing_code = start.json()["pairing_code"]
+    real_pin = start.json()["pairing_pin"]
+
+    for _ in range(5):
+        response = client.post(
+            "/pair/complete",
+            json={"pairing_code": pairing_code, "pairing_pin": "111111"},
+        )
+        assert response.status_code == 400
+
+    blocked = client.post(
+        "/pair/complete",
+        json={"pairing_code": pairing_code, "pairing_pin": real_pin},
+    )
+    assert blocked.status_code == 400
+    assert blocked.json()["message"] == "invalid_or_expired_code"

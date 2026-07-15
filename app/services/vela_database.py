@@ -144,6 +144,7 @@ class VelaDatabase:
                 id TEXT PRIMARY KEY,
                 agent_id TEXT NOT NULL,
                 pairing_code_hash TEXT NOT NULL,
+                pairing_pin_hash TEXT,
                 expires_at TIMESTAMP NOT NULL,
                 used_at TIMESTAMP,
                 status TEXT NOT NULL,
@@ -151,6 +152,9 @@ class VelaDatabase:
                 paired_user_secret TEXT,
                 activation_token_hash TEXT,
                 activation_expires_at TIMESTAMP,
+                relay_secret TEXT,
+                client_secret_delivered_at TIMESTAMP,
+                agent_secret_delivered_at TIMESTAMP,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
             CREATE INDEX IF NOT EXISTS idx_pairing_agent ON agent_pairing_sessions(agent_id, created_at DESC);
@@ -183,6 +187,14 @@ class VelaDatabase:
             );
             """
         )
+        if not self._column_exists("agent_pairing_sessions", "relay_secret"):
+            conn.execute("ALTER TABLE agent_pairing_sessions ADD COLUMN relay_secret TEXT")
+        if not self._column_exists("agent_pairing_sessions", "client_secret_delivered_at"):
+            conn.execute("ALTER TABLE agent_pairing_sessions ADD COLUMN client_secret_delivered_at TIMESTAMP")
+        if not self._column_exists("agent_pairing_sessions", "agent_secret_delivered_at"):
+            conn.execute("ALTER TABLE agent_pairing_sessions ADD COLUMN agent_secret_delivered_at TIMESTAMP")
+        if not self._column_exists("agent_pairing_sessions", "pairing_pin_hash"):
+            conn.execute("ALTER TABLE agent_pairing_sessions ADD COLUMN pairing_pin_hash TEXT")
         conn.commit()
 
     # Secret management
@@ -329,6 +341,8 @@ class VelaDatabase:
         expires_at = now + timedelta(seconds=pairing_ttl_seconds)
         pairing_code = f"{secrets.randbelow(10**8):08d}"
         pairing_code_hash = _hash_token(pairing_code)
+        pairing_pin = f"{secrets.randbelow(10**6):06d}"
+        pairing_pin_hash = _hash_token(pairing_pin)
 
         with self.transaction() as conn:
             existing_agent = conn.execute(
@@ -373,16 +387,17 @@ class VelaDatabase:
             conn.execute(
                 """
                 INSERT INTO agent_pairing_sessions
-                (id, agent_id, pairing_code_hash, expires_at, status, attempt_count)
-                VALUES (?, ?, ?, ?, ?, 0)
+                (id, agent_id, pairing_code_hash, pairing_pin_hash, expires_at, status, attempt_count)
+                VALUES (?, ?, ?, ?, ?, ?, 0)
                 """,
-                (session_id, agent_id, pairing_code_hash, expires_at.isoformat(), STATUS_AWAITING_PAIR),
+                (session_id, agent_id, pairing_code_hash, pairing_pin_hash, expires_at.isoformat(), STATUS_AWAITING_PAIR),
             )
 
         self.record_audit_event("agent_register_started", agent_id, {"session_id": session_id})
         return {
             "agent_id": agent_id,
             "pairing_code": pairing_code,
+            "pairing_pin": pairing_pin,
             "pairing_expires_in": pairing_ttl_seconds,
             "session_id": session_id,
         }
@@ -433,7 +448,7 @@ class VelaDatabase:
                 response["activation_token"] = activation_token
             return response
 
-    def complete_pairing(self, pairing_code: str, user_secret: str, agent_label: Optional[str] = None) -> Dict[str, Any]:
+    def complete_pairing(self, pairing_code: str, pairing_pin: str, agent_label: Optional[str] = None) -> Dict[str, Any]:
         code_hash = _hash_token(pairing_code)
         with self.transaction() as conn:
             session = conn.execute(
@@ -442,9 +457,6 @@ class VelaDatabase:
             ).fetchone()
             if not session:
                 raise ValueError("invalid_or_expired_code")
-
-            if session["status"] == STATUS_PAIRED and session["paired_user_secret"] == user_secret:
-                return {"agent_id": session["agent_id"], "status": STATUS_PAIRED, "idempotent": True}
 
             if session["status"] not in {STATUS_AWAITING_PAIR, STATUS_INITIATED}:
                 raise ValueError("invalid_or_expired_code")
@@ -461,37 +473,58 @@ class VelaDatabase:
                 self._record_audit_event_conn(conn, "pairing_expired", session["agent_id"], {"session_id": session["id"]})
                 raise ValueError("invalid_or_expired_code")
 
+            expected_pin_hash = session["pairing_pin_hash"]
+            if not expected_pin_hash or _hash_token(pairing_pin) != expected_pin_hash:
+                conn.execute(
+                    "UPDATE agent_pairing_sessions SET attempt_count = attempt_count + 1 WHERE id = ?",
+                    (session["id"],),
+                )
+                attempts_row = conn.execute("SELECT attempt_count FROM agent_pairing_sessions WHERE id = ?", (session["id"],)).fetchone()
+                if attempts_row and int(attempts_row["attempt_count"]) >= 5:
+                    conn.execute("UPDATE agent_pairing_sessions SET status = ? WHERE id = ?", (STATUS_EXPIRED, session["id"]))
+                    conn.execute("UPDATE agents SET status = ? WHERE agent_id = ?", (STATUS_EXPIRED, session["agent_id"]))
+                    self._record_audit_event_conn(conn, "pairing_expired", session["agent_id"], {"session_id": session["id"], "reason": "pin_attempts_exceeded"})
+                raise ValueError("invalid_or_expired_code")
+
             now = _utcnow().isoformat()
             conn.execute(
                 """
                 UPDATE agent_pairing_sessions
-                SET status = ?, used_at = ?, paired_user_secret = ?
+                SET status = ?, used_at = ?
                 WHERE id = ? AND used_at IS NULL
                 """,
-                (STATUS_PAIRED, now, user_secret, session["id"]),
+                (STATUS_PAIRED, now, session["id"]),
             )
             updated = conn.execute("SELECT used_at FROM agent_pairing_sessions WHERE id = ?", (session["id"],)).fetchone()
             if not updated or not updated["used_at"]:
                 raise ValueError("invalid_or_expired_code")
 
-            self.create_secret(user_secret)
+            relay_secret = secrets.token_urlsafe(32)
+            self.create_secret(relay_secret)
             conn.execute(
                 """
                 UPDATE agents
-                SET secret = ?, status = ?, tenant_id = COALESCE(tenant_id, ?), display_name = COALESCE(?, display_name)
+                SET secret = ?, status = ?, display_name = COALESCE(?, display_name)
                 WHERE agent_id = ?
                 """,
-                (user_secret, STATUS_PAIRED, user_secret, agent_label, session["agent_id"]),
+                (relay_secret, STATUS_PAIRED, agent_label, session["agent_id"]),
             )
             conn.execute(
                 """
-                INSERT OR IGNORE INTO app_agent_links (user_id, agent_id)
-                VALUES (?, ?)
+                UPDATE agent_pairing_sessions
+                SET relay_secret = ?, client_secret_delivered_at = ?
+                WHERE id = ?
                 """,
-                (user_secret, session["agent_id"]),
+                (relay_secret, now, session["id"]),
             )
             self._record_audit_event_conn(conn, "pairing_completed", session["agent_id"], {"session_id": session["id"]})
-            return {"agent_id": session["agent_id"], "status": STATUS_PAIRED, "idempotent": False}
+            return {
+                "agent_id": session["agent_id"],
+                "status": STATUS_PAIRED,
+                "idempotent": False,
+                "relay_secret": relay_secret,
+                "relay_secret_shared": False,
+            }
 
     def activate_agent(self, agent_id: str, activation_token: str, ttl_seconds: int) -> Dict[str, Any]:
         token_hash = _hash_token(activation_token)
@@ -512,6 +545,10 @@ class VelaDatabase:
                 raise ValueError("invalid_activation_token")
             if not session["activation_expires_at"] or _parse_dt(session["activation_expires_at"]) <= _utcnow():
                 raise ValueError("invalid_activation_token")
+            if not session["relay_secret"]:
+                raise ValueError("pairing_incomplete")
+            if session["agent_secret_delivered_at"]:
+                raise ValueError("secret_already_delivered")
 
             credential = secrets.token_urlsafe(32)
             credential_hash = _hash_token(credential)
@@ -531,13 +568,18 @@ class VelaDatabase:
             conn.execute(
                 """
                 UPDATE agent_pairing_sessions
-                SET activation_token_hash = NULL, activation_expires_at = NULL
+                SET activation_token_hash = NULL, activation_expires_at = NULL, agent_secret_delivered_at = ?
                 WHERE id = ?
                 """,
-                (session["id"],),
+                (_utcnow().isoformat(), session["id"]),
             )
             self._record_audit_event_conn(conn, "agent_activated", agent_id, {"credential_id": credential_id})
-            return {"credential": credential, "expires_in": ttl_seconds, "scopes": scopes}
+            return {
+                "credential": credential,
+                "expires_in": ttl_seconds,
+                "scopes": scopes,
+                "relay_secret": session["relay_secret"],
+            }
 
     def revoke_agent_credentials(self, agent_id: str, revoked_by: Optional[str] = None) -> int:
         with self.transaction() as conn:

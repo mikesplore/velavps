@@ -51,7 +51,6 @@ class Settings(BaseModel):
         # Admin API keys from env vars (optional - for management endpoints)
         raw_keys = os.environ.get("VPS_API_KEYS", "").strip()
         api_keys = [k.strip() for k in raw_keys.split(",") if k.strip()]
-
         vps_data["api_keys"] = api_keys
 
         return cls(vps=VPSSettings(**vps_data))
