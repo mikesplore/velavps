@@ -1,0 +1,18 @@
+[Unit]
+Description=Vela VPS Relay Service (velavps)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=mike
+Group=mike
+WorkingDirectory=/home/mike/PycharmProjects/velavps
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/home/mike/PycharmProjects/velavps/.venv/bin/uvicorn main:app --host 0.0.0.0 --port 8000
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=20
+
+[Install]
+WantedBy=multi-user.target
