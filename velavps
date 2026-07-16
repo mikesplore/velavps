@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SERVICE_NAME="velavps"
+
+usage() {
+  cat <<'EOF'
+Usage: velavps [option]
+
+Options:
+  --start      Start service
+  --stop       Stop service
+  --restart    Restart service
+  --status     Show service status
+  --logs       Follow service logs
+  --help       Show this help
+EOF
+}
+
+run_systemctl() {
+  if [[ "${EUID}" -eq 0 ]]; then
+    systemctl "$@"
+  else
+    sudo systemctl "$@"
+  fi
+}
+
+run_journalctl() {
+  if [[ "${EUID}" -eq 0 ]]; then
+    journalctl "$@"
+  else
+    sudo journalctl "$@"
+  fi
+}
+
+if [[ $# -ne 1 ]]; then
+  usage
+  exit 1
+fi
+
+case "$1" in
+  --start)
+    run_systemctl start "${SERVICE_NAME}"
+    ;;
+  --stop)
+    run_systemctl stop "${SERVICE_NAME}"
+    ;;
+  --restart)
+    run_systemctl restart "${SERVICE_NAME}"
+    ;;
+  --status)
+    run_systemctl status "${SERVICE_NAME}"
+    ;;
+  --logs)
+    run_journalctl -u "${SERVICE_NAME}" -f
+    ;;
+  --help|-h)
+    usage
+    ;;
+  *)
+    usage
+    exit 1
+    ;;
+esac
