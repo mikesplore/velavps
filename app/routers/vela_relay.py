@@ -120,6 +120,10 @@ async def register_status(agent_id: str):
         )
     except ValueError:
         raise HTTPException(status_code=http_status.HTTP_404_NOT_FOUND, detail="Agent not found")
+    registry_agent = await state.registry.get_agent(agent_id) if state.registry else None
+    status_payload["relay_ready"] = bool(
+        registry_agent and (registry_agent.websocket is not None or bool(registry_agent.public_address))
+    )
     return {"api_version": API_VERSION, **status_payload}
 
 

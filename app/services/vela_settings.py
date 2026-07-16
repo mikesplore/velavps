@@ -19,6 +19,7 @@ class VPSSettings(BaseModel):
     legacy_registration_enabled: bool = True
     pairing_code_ttl_seconds: int = 600
     activation_token_ttl_seconds: int = 180
+    agent_connect_wait_seconds: int = 8
     # Admin API keys for management endpoints (optional)
     api_keys: List[str] = []
 

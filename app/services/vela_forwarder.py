@@ -27,10 +27,21 @@ class Forwarder:
         query_params: Optional[Dict[str, str]] = None,
         body: Optional[bytes] = None,
     ) -> Dict[str, Any]:
-        # Get agent from in-memory registry
+        # Try in-memory connection first, then wait briefly during onboarding handoff.
         agent = await self.registry.get_agent(agent_id)
         if not agent:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
+            agent_exists = bool(self.db and self.db.get_agent_by_id(agent_id))
+            if not agent_exists:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
+            agent = await self._wait_for_agent_connection(
+                agent_id=agent_id,
+                timeout_seconds=self.settings.vps.agent_connect_wait_seconds,
+            )
+            if not agent:
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="Agent is connecting. Retry shortly.",
+                )
 
         # Get the agent's secret from database for authentication
         agent_secret = None
@@ -65,6 +76,18 @@ class Forwarder:
                 raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Websocket forwarding error: {str(e)}")
 
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Agent is not connected")
+
+    async def _wait_for_agent_connection(self, agent_id: str, timeout_seconds: int) -> Optional[AgentConnection]:
+        if timeout_seconds <= 0:
+            return await self.registry.get_agent(agent_id)
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout_seconds
+        while loop.time() < deadline:
+            agent = await self.registry.get_agent(agent_id)
+            if agent and (agent.websocket is not None or bool(agent.public_address)):
+                return agent
+            await asyncio.sleep(0.25)
+        return await self.registry.get_agent(agent_id)
 
     def _encode_body_for_websocket(self, body: Optional[bytes]) -> Dict[str, Any]:
         if body is None:

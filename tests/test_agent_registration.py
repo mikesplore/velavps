@@ -117,6 +117,7 @@ def test_pairing_happy_path_start_pair_activate():
     pre_pair = client.get(f"/agents/register/status?agent_id={agent_id}")
     assert pre_pair.status_code == 200
     assert pre_pair.json()["status"] == "AWAITING_PAIR"
+    assert pre_pair.json()["relay_ready"] is False
 
     pair = client.post(
         "/pair/complete",

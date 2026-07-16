@@ -7,4 +7,5 @@ vps:
   legacy_registration_enabled: true
   pairing_code_ttl_seconds: 600
   activation_token_ttl_seconds: 180
+  agent_connect_wait_seconds: 8
   api_keys: []
