@@ -150,6 +150,7 @@ class VelaDatabase:
                 status TEXT NOT NULL,
                 attempt_count INTEGER NOT NULL DEFAULT 0,
                 paired_user_secret TEXT,
+                activation_token TEXT,
                 activation_token_hash TEXT,
                 activation_expires_at TIMESTAMP,
                 relay_secret TEXT,
@@ -195,6 +196,8 @@ class VelaDatabase:
             conn.execute("ALTER TABLE agent_pairing_sessions ADD COLUMN agent_secret_delivered_at TIMESTAMP")
         if not self._column_exists("agent_pairing_sessions", "pairing_pin_hash"):
             conn.execute("ALTER TABLE agent_pairing_sessions ADD COLUMN pairing_pin_hash TEXT")
+        if not self._column_exists("agent_pairing_sessions", "activation_token"):
+            conn.execute("ALTER TABLE agent_pairing_sessions ADD COLUMN activation_token TEXT")
         conn.commit()
 
     # Secret management
@@ -434,18 +437,23 @@ class VelaDatabase:
             ).fetchone()
             response: Dict[str, Any] = {"status": status_value}
             if status_value == STATUS_PAIRED and session:
-                activation_token = secrets.token_urlsafe(24)
-                activation_hash = _hash_token(activation_token)
-                activation_expires_at = (_utcnow() + timedelta(seconds=activation_ttl_seconds)).isoformat()
-                conn.execute(
-                    """
-                    UPDATE agent_pairing_sessions
-                    SET activation_token_hash = ?, activation_expires_at = ?
-                    WHERE id = ?
-                    """,
-                    (activation_hash, activation_expires_at, session["id"]),
-                )
-                response["activation_token"] = activation_token
+                existing_token = session["activation_token"]
+                existing_expires_at = session["activation_expires_at"]
+                if existing_token and existing_expires_at and _parse_dt(existing_expires_at) > _utcnow():
+                    response["activation_token"] = existing_token
+                else:
+                    activation_token = secrets.token_urlsafe(24)
+                    activation_hash = _hash_token(activation_token)
+                    activation_expires_at = (_utcnow() + timedelta(seconds=activation_ttl_seconds)).isoformat()
+                    conn.execute(
+                        """
+                        UPDATE agent_pairing_sessions
+                        SET activation_token = ?, activation_token_hash = ?, activation_expires_at = ?
+                        WHERE id = ?
+                        """,
+                        (activation_token, activation_hash, activation_expires_at, session["id"]),
+                    )
+                    response["activation_token"] = activation_token
             return response
 
     def complete_pairing(self, pairing_code: str, pairing_pin: str, agent_label: Optional[str] = None) -> Dict[str, Any]:
@@ -568,7 +576,7 @@ class VelaDatabase:
             conn.execute(
                 """
                 UPDATE agent_pairing_sessions
-                SET activation_token_hash = NULL, activation_expires_at = NULL, agent_secret_delivered_at = ?
+                SET activation_token = NULL, activation_token_hash = NULL, activation_expires_at = NULL, agent_secret_delivered_at = ?
                 WHERE id = ?
                 """,
                 (_utcnow().isoformat(), session["id"]),

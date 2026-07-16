@@ -227,6 +227,32 @@ def test_activation_token_is_one_time():
     assert second.json()["message"] == "invalid_activation_token"
 
 
+def test_activation_token_is_stable_across_status_polls():
+    start = client.post(
+        "/agents/register/start",
+        json={"agent_name": "agent-token-stable", "device_info": {"device_fingerprint": "token-stable"}},
+    )
+    agent_id = start.json()["agent_id"]
+    pairing_code = start.json()["pairing_code"]
+    pairing_pin = start.json()["pairing_pin"]
+
+    paired = client.post(
+        "/pair/complete",
+        json={"pairing_code": pairing_code, "pairing_pin": pairing_pin},
+    )
+    assert paired.status_code == 200
+
+    first_status = client.get(f"/agents/register/status?agent_id={agent_id}")
+    second_status = client.get(f"/agents/register/status?agent_id={agent_id}")
+    assert first_status.status_code == 200
+    assert second_status.status_code == 200
+    first_token = first_status.json()["activation_token"]
+    second_token = second_status.json()["activation_token"]
+    assert first_token
+    assert second_token
+    assert first_token == second_token
+
+
 def test_repair_rotates_relay_secret():
     start = client.post(
         "/agents/register/start",
