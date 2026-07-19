@@ -11,6 +11,14 @@ from app.services.vela_database import VelaDatabase
 
 
 @dataclass
+class StreamRelaySession:
+    status_code: int = 502
+    headers: Dict[str, str] = field(default_factory=dict)
+    chunks: asyncio.Queue = field(default_factory=asyncio.Queue)
+    started: asyncio.Event = field(default_factory=asyncio.Event)
+
+
+@dataclass
 class AgentConnection:
     agent_id: str
     public_address: Optional[str] = None
@@ -23,6 +31,7 @@ class AgentConnection:
     ws_token_expiry: Optional[datetime] = None
     ws_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     pending_responses: Dict[str, asyncio.Future] = field(default_factory=dict)
+    pending_streams: Dict[str, StreamRelaySession] = field(default_factory=dict)
     pending_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
     def touch(self) -> None:
@@ -120,6 +129,14 @@ class AgentRegistry:
                     if not future.done():
                         future.set_exception(RuntimeError("Agent connection closed"))
                 agent.pending_responses.clear()
+                for session in agent.pending_streams.values():
+                    try:
+                        session.chunks.put_nowait(None)
+                    except asyncio.QueueFull:
+                        pass
+                    if not session.started.is_set():
+                        session.started.set()
+                agent.pending_streams.clear()
 
     async def set_agent_ws_token(self, agent_id: str, token: str, expiry: datetime) -> AgentConnection:
         async with self._lock:

@@ -7,11 +7,13 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi import status as http_status
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from .vela_auth import get_secret
 from app.services import vela_state as state
 from app.services.vela_database import ConflictError
+from app.services.vela_forwarder import decode_chunk_body
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -281,6 +283,34 @@ async def agent_tunnel(websocket: WebSocket, agent_id: str, token: str | None = 
                 if future is not None and not future.done():
                     future.set_result(message)
                 continue
+
+            if message_type == "forward_response_start":
+                request_id = message.get("request_id")
+                async with agent.pending_lock:
+                    session = agent.pending_streams.get(request_id)
+                if session is not None:
+                    session.status_code = int(message.get("status_code", 502))
+                    session.headers = message.get("headers") or {}
+                    session.started.set()
+                continue
+
+            if message_type == "forward_response_chunk":
+                request_id = message.get("request_id")
+                async with agent.pending_lock:
+                    session = agent.pending_streams.get(request_id)
+                if session is not None:
+                    await session.chunks.put(decode_chunk_body(message))
+                continue
+
+            if message_type == "forward_response_end":
+                request_id = message.get("request_id")
+                async with agent.pending_lock:
+                    session = agent.pending_streams.pop(request_id, None)
+                if session is not None:
+                    if not session.started.is_set():
+                        session.started.set()
+                    await session.chunks.put(None)
+                continue
     except WebSocketDisconnect:
         await state.registry.remove_websocket_connection(agent_id)
     except Exception:
@@ -354,11 +384,34 @@ async def relay_request(agent_id: str, path: str, request: Request, secret: str 
     body_bytes = await request.body()
     headers = {k: v for k, v in request.headers.items()}
     query_params = dict(request.query_params)
+    relay_path = f"/{path}"
+    stream = request.method == "POST" and path.rstrip("/").endswith("assistant/stream")
+
+    if stream:
+        status_code, stream_headers, body_iter = await state.forwarder.forward_stream(
+            agent_id=agent_id,
+            method=request.method,
+            path=relay_path,
+            headers=headers,
+            query_params=query_params,
+            body=body_bytes or None,
+        )
+        response_headers = {
+            k: v
+            for k, v in stream_headers.items()
+            if k.lower() not in {"content-length", "transfer-encoding", "connection"}
+        }
+        return StreamingResponse(
+            body_iter,
+            status_code=status_code,
+            media_type=stream_headers.get("content-type", "text/event-stream"),
+            headers=response_headers,
+        )
 
     result = await state.forwarder.forward(
         agent_id=agent_id,
         method=request.method,
-        path=f"/{path}",
+        path=relay_path,
         headers=headers,
         query_params=query_params,
         body=body_bytes or None,

@@ -1,14 +1,31 @@
 import asyncio
 import base64
 import binascii
-from typing import Any, Dict, Optional
+from typing import Any, AsyncIterator, Dict, Optional, Tuple
 
 import httpx
 from fastapi import HTTPException, status
 
-from .vela_agent_registry import AgentRegistry, AgentConnection
+from .vela_agent_registry import AgentConnection, AgentRegistry, StreamRelaySession
 from .vela_database import VelaDatabase
 from .vela_settings import Settings
+
+
+def decode_chunk_body(message: Dict[str, Any]) -> bytes:
+    body = message.get("body", "")
+    encoding = message.get("body_encoding")
+    if encoding == "base64":
+        try:
+            return base64.b64decode(body, validate=True)
+        except (binascii.Error, ValueError, TypeError):
+            return b""
+    if encoding == "utf-8" and isinstance(body, str):
+        return body.encode("utf-8")
+    if isinstance(body, str):
+        return body.encode("utf-8")
+    if isinstance(body, (bytes, bytearray)):
+        return bytes(body)
+    return b""
 
 
 class Forwarder:
@@ -18,16 +35,7 @@ class Forwarder:
         self.db = db
         self._client = httpx.AsyncClient(timeout=settings.vps.default_agent_timeout_seconds)
 
-    async def forward(
-        self,
-        agent_id: str,
-        method: str,
-        path: str,
-        headers: Optional[Dict[str, str]] = None,
-        query_params: Optional[Dict[str, str]] = None,
-        body: Optional[bytes] = None,
-    ) -> Dict[str, Any]:
-        # Try in-memory connection first, then wait briefly during onboarding handoff.
+    async def _resolve_agent(self, agent_id: str) -> AgentConnection:
         agent = await self.registry.get_agent(agent_id)
         if not agent:
             agent_exists = bool(self.db and self.db.get_agent_by_id(agent_id))
@@ -42,21 +50,32 @@ class Forwarder:
                     status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                     detail="Agent is connecting. Retry shortly.",
                 )
+        return agent
 
-        # Get the agent's secret from database for authentication
+    def _inject_agent_secret(self, agent_id: str, headers: Optional[Dict[str, str]]) -> Dict[str, str]:
+        headers = dict(headers or {})
         agent_secret = None
         if self.db:
             db_agent = self.db.get_agent_by_id(agent_id)
             if db_agent:
                 agent_secret = db_agent.secret
-
-        headers = headers or {}
         if agent_secret:
-            # Use the user's secret for authentication with the agent
             headers["X-Secret"] = agent_secret
-        elif self.settings.vps.agent_shared_secret:
-            # Fallback to legacy shared secret (if configured)
+        elif getattr(self.settings.vps, "agent_shared_secret", None):
             headers["X-Secret"] = self.settings.vps.agent_shared_secret
+        return headers
+
+    async def forward(
+        self,
+        agent_id: str,
+        method: str,
+        path: str,
+        headers: Optional[Dict[str, str]] = None,
+        query_params: Optional[Dict[str, str]] = None,
+        body: Optional[bytes] = None,
+    ) -> Dict[str, Any]:
+        agent = await self._resolve_agent(agent_id)
+        headers = self._inject_agent_secret(agent_id, headers)
 
         if self.settings.vps.allow_direct_agent_forwarding and agent.public_address:
             try:
@@ -68,14 +87,83 @@ class Forwarder:
             try:
                 return await self._forward_via_websocket(agent, method, path, headers, query_params or {}, body)
             except Exception as e:
-                # If websocket forwarding fails, don't immediately give up if there's a chance to reconnect
-                # or if it was just a transient issue. For now, we log and re-raise or handle.
-                # But wait, if the websocket is actually closed, we should clear it.
-                if isinstance(e, (RuntimeError, asyncio.TimeoutError)):
-                     raise
+                if isinstance(e, (RuntimeError, asyncio.TimeoutError, HTTPException)):
+                    raise
                 raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Websocket forwarding error: {str(e)}")
 
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Agent is not connected")
+
+    async def forward_stream(
+        self,
+        agent_id: str,
+        method: str,
+        path: str,
+        headers: Optional[Dict[str, str]] = None,
+        query_params: Optional[Dict[str, str]] = None,
+        body: Optional[bytes] = None,
+    ) -> Tuple[int, Dict[str, str], AsyncIterator[bytes]]:
+        """
+        Stream a response from the agent over WebSocket using
+        forward_response_start / forward_response_chunk / forward_response_end.
+        """
+        agent = await self._resolve_agent(agent_id)
+        headers = self._inject_agent_secret(agent_id, headers)
+
+        if agent.websocket is None:
+            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Agent is not connected")
+
+        request_id = str(id(agent.websocket)) + str(asyncio.get_running_loop().time())
+        session = StreamRelaySession()
+        async with agent.pending_lock:
+            agent.pending_streams[request_id] = session
+
+        body_payload = self._encode_body_for_websocket(body)
+        message = {
+            "type": "forward_request",
+            "request_id": request_id,
+            "method": method,
+            "path": path,
+            "query_params": query_params or {},
+            "headers": headers,
+            **body_payload,
+        }
+
+        try:
+            async with agent.ws_lock:
+                await agent.websocket.send_json(message)
+            await asyncio.wait_for(
+                session.started.wait(),
+                timeout=self.settings.vps.default_agent_timeout_seconds,
+            )
+        except asyncio.TimeoutError:
+            async with agent.pending_lock:
+                agent.pending_streams.pop(request_id, None)
+            raise HTTPException(status_code=status.HTTP_504_GATEWAY_TIMEOUT, detail="Agent stream start timed out")
+        except Exception:
+            async with agent.pending_lock:
+                agent.pending_streams.pop(request_id, None)
+            raise
+
+        chunk_timeout = max(self.settings.vps.default_agent_timeout_seconds, 60)
+
+        async def body_iter() -> AsyncIterator[bytes]:
+            try:
+                while True:
+                    try:
+                        chunk = await asyncio.wait_for(session.chunks.get(), timeout=chunk_timeout)
+                    except asyncio.TimeoutError:
+                        raise HTTPException(
+                            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+                            detail="Agent stream timed out",
+                        )
+                    if chunk is None:
+                        break
+                    yield chunk
+            finally:
+                async with agent.pending_lock:
+                    agent.pending_streams.pop(request_id, None)
+
+        return session.status_code, session.headers, body_iter()
 
     async def _wait_for_agent_connection(self, agent_id: str, timeout_seconds: int) -> Optional[AgentConnection]:
         if timeout_seconds <= 0:
@@ -149,26 +237,7 @@ class Forwarder:
             if response.get("type") != "forward_response" or response.get("request_id") != request_id:
                 raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Invalid agent response")
 
-            body_value = response.get("body", "")
-            body_encoding = response.get("body_encoding")
-
-            if body_encoding == "base64":
-                try:
-                    body_bytes = base64.b64decode(body_value, validate=True)
-                except (binascii.Error, ValueError):
-                    raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Invalid body encoding from agent")
-            elif body_encoding == "utf-8":
-                body_bytes = body_value.encode("utf-8")
-            elif isinstance(body_value, str):
-                try:
-                    body_bytes = base64.b64decode(body_value, validate=True)
-                except (binascii.Error, ValueError):
-                    body_bytes = body_value.encode("utf-8")
-            elif isinstance(body_value, (bytes, bytearray)):
-                body_bytes = bytes(body_value)
-            else:
-                body_bytes = str(body_value).encode("utf-8")
-
+            body_bytes = decode_chunk_body(response)
             return {
                 "status_code": response.get("status_code", 502),
                 "headers": response.get("headers", {}),
