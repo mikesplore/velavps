@@ -338,7 +338,8 @@ async def spotify_callback(agent_id: str, request: Request):
         raise HTTPException(status_code=http_status.HTTP_404_NOT_FOUND, detail="Agent not found")
 
     query_params = dict(request.query_params)
-    callback_path = "/callback"
+    # Local Vela exposes the OAuth landing page at /spotify/callback (public HTML).
+    callback_path = "/spotify/callback"
 
     result = await state.forwarder.forward(
         agent_id=agent_id,

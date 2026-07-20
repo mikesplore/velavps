@@ -139,6 +139,7 @@ def test_callback_forwards_query_params(client):
 
     assert response.status_code == 200
     assert len(captured_requests) == 1
+    assert captured_requests[0].startswith("/spotify/callback?")
     assert "code=abc123" in captured_requests[0]
     assert "state=xyz789" in captured_requests[0]
 
