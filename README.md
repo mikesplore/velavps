@@ -149,9 +149,19 @@ curl -s "$RELAY_BASE_URL/monitor/cpu" \
 
 ## Push notifications
 
-FCM credentials belong on the VPS (`vps.fcm_service_account_path` in `config.yaml`), not on each user's PC.
-The official Android APK ships with a fixed `google-services.json`, so push delivery must use the matching
-Firebase Admin service account on the relay.
+FCM credentials belong on the VPS, not on each user's PC. Set the Firebase Admin key via `.env`
+(preferred) or `config.yaml`:
+
+```bash
+cp .env.example .env
+# edit VELAVPS_FCM_SERVICE_ACCOUNT_PATH to your downloaded service-account JSON
+chmod 600 .env
+sudo systemctl restart velavps
+```
+
+`.env` key: `VELAVPS_FCM_SERVICE_ACCOUNT_PATH` (also accepts `FCM_SERVICE_ACCOUNT_PATH`).
+The file must be a **Firebase Admin service account key** (`"type": "service_account"`), not
+`google-services.json` from the Android app.
 
 When the agent tunnel disconnects, the VPS waits `connectivity_offline_delay_seconds` (default 30) and then
 sends a push to registered phones if the agent is still offline. Reconnecting clears the pending alert and

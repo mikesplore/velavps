@@ -35,7 +35,7 @@ def get_configuration_error() -> str | None:
         return "Server not configured"
     path = (state.settings.vps.fcm_service_account_path or "").strip()
     if not path:
-        return "FCM service account not configured (set vps.fcm_service_account_path)"
+        return "FCM service account not configured (set VELAVPS_FCM_SERVICE_ACCOUNT_PATH in .env)"
     return _validate_service_account_file(Path(path).expanduser())
 
 
@@ -108,7 +108,7 @@ def _get_messaging():
         return None
     path = (state.settings.vps.fcm_service_account_path or "").strip()
     if not path:
-        logger.info("FCM push is not configured: set vps.fcm_service_account_path.")
+        logger.info("FCM push is not configured: set VELAVPS_FCM_SERVICE_ACCOUNT_PATH in .env.")
         return None
     try:
         import firebase_admin

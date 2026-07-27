@@ -1,13 +1,18 @@
 """
-Settings loader – single source of truth.
-
-All config is loaded from config.yaml.
+Settings loader – config.yaml plus optional .env overrides for secrets.
 """
+from __future__ import annotations
+
+import os
 from pathlib import Path
 from typing import List
 
 import yaml
+from dotenv import load_dotenv
 from pydantic import BaseModel
+
+BASE_DIR = Path(__file__).resolve().parents[2]
+load_dotenv(BASE_DIR / ".env")
 
 
 class VPSSettings(BaseModel):
@@ -27,6 +32,16 @@ class VPSSettings(BaseModel):
     # Admin API keys for management endpoints (optional)
     api_keys: List[str] = []
 
+    @classmethod
+    def from_yaml(cls, data: dict) -> "VPSSettings":
+        settings = cls(**data)
+        env_fcm = (
+            os.getenv("VELAVPS_FCM_SERVICE_ACCOUNT_PATH", "").strip()
+            or os.getenv("FCM_SERVICE_ACCOUNT_PATH", "").strip()
+        )
+        if env_fcm:
+            settings.fcm_service_account_path = env_fcm
+        return settings
 
 class Settings(BaseModel):
     vps: VPSSettings
@@ -37,8 +52,7 @@ class Settings(BaseModel):
             data = yaml.safe_load(fh) or {}
 
         vps_data: dict = data.get("vps", {})
-
-        return cls(vps=VPSSettings(**vps_data))
+        return cls(vps=VPSSettings.from_yaml(vps_data))
 
 
 settings: "Settings | None" = None

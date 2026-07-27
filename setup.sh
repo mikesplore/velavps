@@ -47,6 +47,7 @@ User=${SERVICE_USER}
 Group=${SERVICE_GROUP}
 WorkingDirectory=${PROJECT_DIR}
 Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=-${PROJECT_DIR}/.env
 ExecStart=${UVICORN_BIN} main:app --host 0.0.0.0 --port 8000
 Restart=on-failure
 RestartSec=3
