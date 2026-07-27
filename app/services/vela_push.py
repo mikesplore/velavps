@@ -55,6 +55,31 @@ def unregister_device(*, agent_id: str, token: str) -> bool:
     return state.db.delete_push_device(agent_id=agent_id, token=token)
 
 
+def agent_label(agent_id: str) -> str:
+    """Human-readable name for an agent, for use in notification copy."""
+    if state.db is None:
+        return agent_id
+    agent = state.db.get_agent_by_id(agent_id)
+    if agent and agent.display_name:
+        return agent.display_name
+    return agent_id
+
+
+def agent_push_context(agent_id: str) -> dict[str, str]:
+    """Agent metadata merged into every FCM data payload."""
+    context: dict[str, str] = {"agent_id": agent_id}
+    if state.db is None:
+        return context
+    agent = state.db.get_agent_by_id(agent_id)
+    if agent is None:
+        return context
+    if agent.display_name:
+        context["display_name"] = agent.display_name
+    if agent.tenant_id:
+        context["tenant_id"] = agent.tenant_id
+    return context
+
+
 def send_push(
     *,
     agent_id: str,
@@ -66,6 +91,10 @@ def send_push(
     if messaging is None or state.db is None:
         return 0
 
+    payload = agent_push_context(agent_id)
+    payload.update({key: str(value) for key, value in data.items()})
+    payload["agent_id"] = agent_id
+
     devices = state.db.list_push_devices(agent_id)
     delivered = 0
     invalid_tokens: list[str] = []
@@ -73,7 +102,7 @@ def send_push(
         try:
             message = messaging.Message(
                 notification=messaging.Notification(title=title, body=body),
-                data={key: str(value) for key, value in data.items()},
+                data=payload,
                 token=device["token"],
             )
             messaging.send(message)

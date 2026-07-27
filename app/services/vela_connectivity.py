@@ -54,10 +54,11 @@ class ConnectivityMonitor:
             tracked.offline_notified = False
 
         if was_offline_notified:
+            label = vela_push.agent_label(agent_id)
             await self._send_connectivity_push(
                 agent_id=agent_id,
-                title="Vela · PC back online",
-                body="Your desktop agent is reachable again.",
+                title=f"Vela · {label} back online",
+                body=f"{label} is reachable again.",
                 status="online",
             )
 
@@ -90,10 +91,11 @@ class ConnectivityMonitor:
                 return
             tracked.offline_notified = True
 
+        label = vela_push.agent_label(agent_id)
         await self._send_connectivity_push(
             agent_id=agent_id,
-            title="Vela · PC unreachable",
-            body="Your desktop agent is offline. Remote control is unavailable until it reconnects.",
+            title=f"Vela · {label} unreachable",
+            body=f"{label} is offline. Remote control is unavailable until it reconnects.",
             status="offline",
         )
 
@@ -111,7 +113,6 @@ class ConnectivityMonitor:
                     "source": "vela",
                     "alert_type": "agent_connectivity",
                     "status": status,
-                    "agent_id": agent_id,
                 },
             )
             logger.info("Connectivity push (%s) for %s delivered to %d device(s)", status, agent_id, delivered)

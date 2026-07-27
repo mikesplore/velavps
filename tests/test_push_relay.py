@@ -121,3 +121,81 @@ def test_relay_push_send_delivers_via_service(monkeypatch):
     assert response.status_code == 200
     assert response.json()["delivered"] == 2
     assert sent[0]["agent_id"] == agent_id
+
+
+def test_send_push_includes_agent_metadata(monkeypatch):
+    agent_id, _secret = _pair_agent("fp-metadata")
+    state.db.upsert_push_device(agent_id=agent_id, token="d" * 32)
+
+    sent = []
+
+    class FakeNotification:
+        def __init__(self, **kwargs):
+            pass
+
+    class FakeMessage:
+        def __init__(self, **kwargs):
+            self._kwargs = kwargs
+
+    class FakeMessaging:
+        Notification = FakeNotification
+        Message = FakeMessage
+
+        @staticmethod
+        def send(message):
+            sent.append(message)
+            return "msg-id"
+
+    monkeypatch.setattr("app.services.vela_push._get_messaging", lambda: FakeMessaging())
+
+    from app.services import vela_push
+
+    delivered = vela_push.send_push(
+        agent_id=agent_id,
+        title="Alert",
+        body="Something happened",
+        data={"source": "vela", "alert_type": "custom"},
+    )
+    assert delivered == 1
+    assert len(sent) == 1
+    data = sent[0]._kwargs["data"]
+    assert data["agent_id"] == agent_id
+    assert data["display_name"] == "Phone"
+    assert data["source"] == "vela"
+    assert data["alert_type"] == "custom"
+
+
+def test_connectivity_push_uses_agent_label(monkeypatch):
+    agent_id, _secret = _pair_agent("fp-connectivity")
+
+    captured = []
+
+    def fake_send_push(**kwargs):
+        captured.append(kwargs)
+        return 1
+
+    monkeypatch.setattr("app.services.vela_push.is_configured", lambda: True)
+    monkeypatch.setattr("app.services.vela_push.send_push", fake_send_push)
+
+    from app.services.vela_connectivity import ConnectivityMonitor, _AgentConnectivityState
+    import asyncio
+
+    monitor = ConnectivityMonitor()
+
+    async def run():
+        monitor._states[agent_id] = _AgentConnectivityState(offline_notified=True)
+        await monitor.on_agent_connected(agent_id)
+
+        monitor._states[agent_id] = _AgentConnectivityState(connected=False, offline_notified=False)
+        await monitor._offline_after_delay(agent_id, 0)
+
+    asyncio.run(run())
+
+    assert len(captured) == 2
+    online, offline = captured
+    assert online["title"] == "Vela · Phone back online"
+    assert online["body"] == "Phone is reachable again."
+    assert offline["title"] == "Vela · Phone unreachable"
+    assert offline["body"] == "Phone is offline. Remote control is unavailable until it reconnects."
+    assert online["data"]["alert_type"] == "agent_connectivity"
+    assert offline["data"]["status"] == "offline"
