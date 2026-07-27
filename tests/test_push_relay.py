@@ -131,7 +131,8 @@ def test_send_push_includes_agent_metadata(monkeypatch):
 
     class FakeNotification:
         def __init__(self, **kwargs):
-            pass
+            self.title = kwargs.get("title")
+            self.body = kwargs.get("body")
 
     class FakeMessage:
         def __init__(self, **kwargs):
@@ -158,6 +159,8 @@ def test_send_push_includes_agent_metadata(monkeypatch):
     )
     assert delivered == 1
     assert len(sent) == 1
+    notification = sent[0]._kwargs["notification"]
+    assert notification.title == "Vela · Phone · Alert"
     data = sent[0]._kwargs["data"]
     assert data["agent_id"] == agent_id
     assert data["display_name"] == "Phone"
@@ -199,3 +202,24 @@ def test_connectivity_push_uses_agent_label(monkeypatch):
     assert offline["body"] == "Phone is offline. Remote control is unavailable until it reconnects."
     assert online["data"]["alert_type"] == "agent_connectivity"
     assert offline["data"]["status"] == "offline"
+
+
+def test_format_push_title():
+    from app.services import vela_push
+
+    agent_id = "agt_test"
+
+    class FakeDb:
+        def get_agent_by_id(self, _agent_id):
+            class Agent:
+                display_name = "Work PC"
+            return Agent()
+
+    original_db = state.db
+    state.db = FakeDb()
+    try:
+        assert vela_push.format_push_title(agent_id, "Vela alert · HighCPU") == "Vela · Work PC · HighCPU"
+        assert vela_push.format_push_title(agent_id, "Vela · Work PC back online") == "Vela · Work PC back online"
+        assert vela_push.format_push_title(agent_id, "Custom") == "Vela · Work PC · Custom"
+    finally:
+        state.db = original_db

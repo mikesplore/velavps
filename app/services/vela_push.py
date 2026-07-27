@@ -80,6 +80,26 @@ def agent_push_context(agent_id: str) -> dict[str, str]:
     return context
 
 
+def format_push_title(agent_id: str, title: str) -> str:
+    """Prefix notification titles with the agent label for multi-agent phones."""
+    label = agent_label(agent_id)
+    prefix = f"Vela · {label}"
+    if title.startswith(prefix):
+        return title
+    if title.startswith("Vela alert · "):
+        return f"{prefix} · {title[len('Vela alert · '):]}"
+    if title.startswith("Vela resolved · "):
+        return f"{prefix} · {title[len('Vela resolved · '):]}"
+    if title.startswith("Vela · "):
+        rest = title[len("Vela · "):]
+        if rest.startswith(label):
+            return title
+        return f"{prefix} · {rest}"
+    if title.startswith(f"{label} · "):
+        return title
+    return f"{prefix} · {title}"
+
+
 def send_push(
     *,
     agent_id: str,
@@ -94,6 +114,7 @@ def send_push(
     payload = agent_push_context(agent_id)
     payload.update({key: str(value) for key, value in data.items()})
     payload["agent_id"] = agent_id
+    title = format_push_title(agent_id, title)
 
     devices = state.db.list_push_devices(agent_id)
     delivered = 0
