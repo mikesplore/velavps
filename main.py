@@ -1,3 +1,4 @@
+import logging
 from pathlib import Path
 from datetime import datetime, timezone
 
@@ -39,6 +40,19 @@ app.add_middleware(SlowAPIMiddleware)
 
 app.include_router(relay_router)
 app.include_router(admin_router)
+
+logger = logging.getLogger("velavps")
+
+
+@app.on_event("startup")
+async def _check_websocket_support() -> None:
+    try:
+        import websockets  # noqa: F401
+    except ImportError:
+        logger.critical(
+            "WebSocket support missing: pip install 'uvicorn[standard]' websockets "
+            "(agent tunnel /tunnel will fail until fixed)"
+        )
 
 
 class HealthResponse(BaseModel):
