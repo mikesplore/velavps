@@ -186,6 +186,16 @@ class VelaDatabase:
                 payload TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
+
+            CREATE TABLE IF NOT EXISTS push_devices (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                agent_id TEXT NOT NULL,
+                token TEXT NOT NULL UNIQUE,
+                installation_id TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE INDEX IF NOT EXISTS idx_push_devices_agent ON push_devices(agent_id);
             """
         )
         if not self._column_exists("agent_pairing_sessions", "relay_secret"):
@@ -635,6 +645,56 @@ class VelaDatabase:
         conn = self._get_connection()
         result = conn.execute("DELETE FROM ws_tokens WHERE expiry <= CURRENT_TIMESTAMP")
         return result.rowcount
+
+    # Push device registry (FCM tokens per paired agent)
+    def upsert_push_device(self, *, agent_id: str, token: str, installation_id: str | None = None) -> None:
+        now = _utcnow().isoformat()
+        with self.transaction() as conn:
+            existing = conn.execute("SELECT id FROM push_devices WHERE token = ?", (token,)).fetchone()
+            if existing:
+                conn.execute(
+                    """
+                    UPDATE push_devices
+                    SET agent_id = ?, installation_id = ?, updated_at = ?
+                    WHERE token = ?
+                    """,
+                    (agent_id, installation_id, now, token),
+                )
+            else:
+                conn.execute(
+                    """
+                    INSERT INTO push_devices (agent_id, token, installation_id, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (agent_id, token, installation_id, now, now),
+                )
+
+    def delete_push_device(self, *, agent_id: str, token: str) -> bool:
+        with self.transaction() as conn:
+            result = conn.execute(
+                "DELETE FROM push_devices WHERE agent_id = ? AND token = ?",
+                (agent_id, token),
+            )
+            return result.rowcount > 0
+
+    def delete_push_tokens(self, *, agent_id: str, tokens: list[str]) -> int:
+        if not tokens:
+            return 0
+        placeholders = ",".join("?" for _ in tokens)
+        with self.transaction() as conn:
+            result = conn.execute(
+                f"DELETE FROM push_devices WHERE agent_id = ? AND token IN ({placeholders})",
+                (agent_id, *tokens),
+            )
+            return result.rowcount
+
+    def list_push_devices(self, agent_id: str) -> list[dict[str, Any]]:
+        conn = self._get_connection()
+        rows = conn.execute(
+            "SELECT id, agent_id, token, installation_id FROM push_devices WHERE agent_id = ?",
+            (agent_id,),
+        ).fetchall()
+        return [dict(row) for row in rows]
 
 
 class ConflictError(Exception):

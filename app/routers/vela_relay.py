@@ -1,4 +1,5 @@
 import hashlib
+import json
 import logging
 import secrets
 import threading
@@ -8,12 +9,14 @@ from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi import status as http_status
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from .vela_auth import get_secret
 from app.services import vela_state as state
+from app.services.vela_connectivity import monitor as connectivity_monitor
 from app.services.vela_database import ConflictError
 from app.services.vela_forwarder import decode_chunk_body
+from app.services import vela_push
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -78,6 +81,36 @@ class ActivateRequest(BaseModel):
     activation_token: str
 
 
+class PushDeviceRegistration(BaseModel):
+    token: str = Field(min_length=20, max_length=4096)
+    installation_id: str | None = Field(default=None, max_length=256)
+
+
+class PushDeviceRemoval(BaseModel):
+    token: str = Field(min_length=20, max_length=4096)
+
+
+class PushSendRequest(BaseModel):
+    title: str = Field(min_length=1, max_length=200)
+    body: str = Field(min_length=1, max_length=1000)
+    data: dict[str, str] = Field(default_factory=dict)
+
+
+def _verify_agent_access(agent_id: str, secret: str):
+    if state.db is None:
+        raise HTTPException(status_code=http_status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Server not configured")
+    agent = state.db.get_agent(agent_id, secret)
+    if not agent:
+        existing_agent = state.db.get_agent_by_id(agent_id)
+        if existing_agent:
+            raise HTTPException(
+                status_code=http_status.HTTP_403_FORBIDDEN,
+                detail="Access denied: this agent belongs to another user",
+            )
+        raise HTTPException(status_code=http_status.HTTP_404_NOT_FOUND, detail="Agent not found")
+    return agent
+
+
 def _request_ip(request: Request) -> str:
     return request.client.host if request.client else "unknown"
 
@@ -126,6 +159,11 @@ async def register_status(agent_id: str):
     status_payload["relay_ready"] = bool(
         registry_agent and (registry_agent.websocket is not None or bool(registry_agent.public_address))
     )
+    if registry_agent:
+        status_payload["connected"] = bool(registry_agent.connected and registry_agent.websocket is not None)
+        status_payload["last_seen"] = registry_agent.last_seen.isoformat().replace("+00:00", "Z")
+    else:
+        status_payload["connected"] = False
     return {"api_version": API_VERSION, **status_payload}
 
 
@@ -317,6 +355,29 @@ async def agent_tunnel(websocket: WebSocket, agent_id: str, token: str | None = 
         await state.registry.remove_websocket_connection(agent_id)
 
 
+@router.get("/relay/{agent_id}/status", dependencies=[Depends(get_secret)])
+async def relay_agent_status(agent_id: str, secret: str = Depends(get_secret)):
+    """Return whether the desktop agent tunnel is currently connected."""
+    _verify_agent_access(agent_id, secret)
+    return await connectivity_monitor.agent_status(agent_id)
+
+
+@router.post("/agents/{agent_id}/push/send", dependencies=[Depends(get_secret)])
+async def agent_push_send(agent_id: str, body: PushSendRequest, secret: str = Depends(get_secret)):
+    """Send a push notification to phones registered for this agent (PC-originated alerts)."""
+    _verify_agent_access(agent_id, secret)
+    config_error = vela_push.get_configuration_error()
+    if config_error:
+        raise HTTPException(status_code=http_status.HTTP_503_SERVICE_UNAVAILABLE, detail=config_error)
+    delivered = vela_push.send_push(
+        agent_id=agent_id,
+        title=body.title,
+        body=body.body,
+        data=body.data,
+    )
+    return {"success": delivered > 0, "delivered": delivered, "configured": True}
+
+
 @router.get("/relay/{agent_id}/callback")
 async def spotify_callback(agent_id: str, request: Request):
     """
@@ -371,16 +432,30 @@ async def relay_request(agent_id: str, path: str, request: Request, secret: str 
         raise HTTPException(status_code=http_status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Server not configured")
 
     # Check agent exists and belongs to this secret (isolation check)
-    agent = state.db.get_agent(agent_id, secret)
-    if not agent:
-        # Check if agent exists but belongs to someone else
-        existing_agent = state.db.get_agent_by_id(agent_id)
-        if existing_agent:
-            raise HTTPException(
-                status_code=http_status.HTTP_403_FORBIDDEN,
-                detail="Access denied: this agent belongs to another user"
-            )
-        raise HTTPException(status_code=http_status.HTTP_404_NOT_FOUND, detail="Agent not found")
+    _verify_agent_access(agent_id, secret)
+
+    normalized_path = path.strip("/")
+    if normalized_path == "push/devices" and request.method == "POST":
+        payload = PushDeviceRegistration.model_validate(json.loads(await request.body() or "{}"))
+        vela_push.register_device(agent_id=agent_id, token=payload.token, installation_id=payload.installation_id)
+        return {"success": True}
+
+    if normalized_path == "push/devices" and request.method == "DELETE":
+        payload = PushDeviceRemoval.model_validate(json.loads(await request.body() or "{}"))
+        return {"success": vela_push.unregister_device(agent_id=agent_id, token=payload.token)}
+
+    if normalized_path == "push/send" and request.method == "POST":
+        payload = PushSendRequest.model_validate(json.loads(await request.body() or "{}"))
+        config_error = vela_push.get_configuration_error()
+        if config_error:
+            raise HTTPException(status_code=http_status.HTTP_503_SERVICE_UNAVAILABLE, detail=config_error)
+        delivered = vela_push.send_push(
+            agent_id=agent_id,
+            title=payload.title,
+            body=payload.body,
+            data=payload.data,
+        )
+        return {"success": delivered > 0, "delivered": delivered, "configured": True}
 
     body_bytes = await request.body()
     headers = {k: v for k, v in request.headers.items()}

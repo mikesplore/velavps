@@ -20,6 +20,10 @@ class VPSSettings(BaseModel):
     pairing_code_ttl_seconds: int = 600
     activation_token_ttl_seconds: int = 180
     agent_connect_wait_seconds: int = 8
+    # Firebase Admin service account JSON (matches the official Android APK project)
+    fcm_service_account_path: str = ""
+    # Wait this long after tunnel disconnect before notifying phones (avoids flap noise)
+    connectivity_offline_delay_seconds: int = 30
     # Admin API keys for management endpoints (optional)
     api_keys: List[str] = []
 

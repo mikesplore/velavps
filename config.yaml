@@ -8,4 +8,6 @@ vps:
   pairing_code_ttl_seconds: 600
   activation_token_ttl_seconds: 180
   agent_connect_wait_seconds: 8
+  fcm_service_account_path: ""
+  connectivity_offline_delay_seconds: 30
   api_keys: []

@@ -109,15 +109,21 @@ class AgentRegistry:
                 agent = AgentConnection(agent_id=agent_id)
                 self._agents[agent_id] = agent
             agent.websocket = websocket
-            agent.connected = True
+            agent.connected = websocket is not None
             agent.touch()
-            return agent
+        if websocket is not None:
+            from app.services.vela_connectivity import monitor as connectivity_monitor
+
+            await connectivity_monitor.on_agent_connected(agent_id)
+        return agent
 
     async def remove_websocket_connection(self, agent_id: str) -> None:
+        was_connected = False
         async with self._lock:
             agent = self._agents.get(agent_id)
             if agent is None:
                 return
+            was_connected = agent.connected
             agent.websocket = None
             agent.connected = False
             # Keep ws_token intact for reconnection; do NOT clear it here
@@ -137,6 +143,10 @@ class AgentRegistry:
                     if not session.started.is_set():
                         session.started.set()
                 agent.pending_streams.clear()
+        if was_connected:
+            from app.services.vela_connectivity import monitor as connectivity_monitor
+
+            await connectivity_monitor.on_agent_disconnected(agent_id)
 
     async def set_agent_ws_token(self, agent_id: str, token: str, expiry: datetime) -> AgentConnection:
         async with self._lock:

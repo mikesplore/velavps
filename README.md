@@ -131,16 +131,31 @@ curl -s "$RELAY_BASE_URL/monitor/cpu" \
 
 - `GET /health`
 - `POST /agents/register/start`
-- `GET /agents/register/status`
+- `GET /agents/register/status` — includes `connected` when the agent tunnel is up
 - `POST /pair/complete`
 - `POST /agents/register/activate`
 - `POST /agents/{agent_id}/revoke`
-- `GET|POST|PUT|PATCH|DELETE /relay/{agent_id}/{path}`
+- `GET /relay/{agent_id}/status` — live tunnel connectivity for the Android app
+- `POST /relay/{agent_id}/push/devices` — register FCM token (handled on VPS, not forwarded)
+- `DELETE /relay/{agent_id}/push/devices` — unregister FCM token
+- `POST /relay/{agent_id}/push/send` — send push to this agent's phones
+- `POST /agents/{agent_id}/push/send` — PC-originated push (alerts from the local Vela backend)
+- `GET|POST|PUT|PATCH|DELETE /relay/{agent_id}/{path}` — other API calls forwarded to the agent
 - `GET /agents`
 - `GET /agents/{agent_id}`
 - `POST /agents/{agent_id}/ws-token`
 - `POST /register`
 - `WebSocket /tunnel?agent_id={agent_id}&token={ws_token}`
+
+## Push notifications
+
+FCM credentials belong on the VPS (`vps.fcm_service_account_path` in `config.yaml`), not on each user's PC.
+The official Android APK ships with a fixed `google-services.json`, so push delivery must use the matching
+Firebase Admin service account on the relay.
+
+When the agent tunnel disconnects, the VPS waits `connectivity_offline_delay_seconds` (default 30) and then
+sends a push to registered phones if the agent is still offline. Reconnecting clears the pending alert and
+can send a "back online" notification.
 
 ## Legacy flow
 
