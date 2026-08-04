@@ -19,6 +19,8 @@ class _AgentConnectivityState:
     last_seen: datetime = field(default_factory=lambda: datetime.now(UTC))
     offline_task: asyncio.Task | None = None
     offline_notified: bool = False
+    last_offline_notification_at: datetime | None = None
+    connected_since: datetime | None = None
 
 
 class ConnectivityMonitor:
@@ -52,8 +54,19 @@ class ConnectivityMonitor:
             tracked.connected = True
             tracked.last_seen = datetime.now(UTC)
             tracked.offline_notified = False
+            tracked.connected_since = datetime.now(UTC)
 
+        # Only send "back online" if connection is stable for a minimum period
         if was_offline_notified:
+            stable_delay = 10  # seconds
+            await asyncio.sleep(stable_delay)
+            async with self._lock:
+                current = self._states.get(agent_id)
+                if not current or not current.connected:
+                    return  # Disconnected again during stable delay
+                if current.connected_since and (datetime.now(UTC) - current.connected_since).total_seconds() < stable_delay:
+                    return  # Not connected long enough
+            
             label = vela_push.agent_label(agent_id)
             await self._send_connectivity_push(
                 agent_id=agent_id,
@@ -89,7 +102,14 @@ class ConnectivityMonitor:
             tracked = self._states.setdefault(agent_id, _AgentConnectivityState())
             if tracked.connected:
                 return
+            # Don't send another offline notification if we sent one recently (5 minute cooldown)
+            if tracked.last_offline_notification_at:
+                time_since = (datetime.now(UTC) - tracked.last_offline_notification_at).total_seconds()
+                if time_since < 300:  # 5 minutes
+                    logger.info("Skipping offline notification for %s: sent %d seconds ago", agent_id, int(time_since))
+                    return
             tracked.offline_notified = True
+            tracked.last_offline_notification_at = datetime.now(UTC)
 
         label = vela_push.agent_label(agent_id)
         await self._send_connectivity_push(
