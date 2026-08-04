@@ -89,19 +89,19 @@ def agent_push_context(agent_id: str) -> dict[str, str]:
 def format_push_title(agent_id: str, title: str) -> str:
     """Prefix notification titles with the agent label for multi-agent phones."""
     label = agent_label(agent_id)
-    prefix = f"Vela · {label}"
+    prefix = f"{label}"
     if title.startswith(prefix):
         return title
-    if title.startswith("Vela alert · "):
-        return f"{prefix} · {title[len('Vela alert · '):]}"
-    if title.startswith("Vela resolved · "):
-        return f"{prefix} · {title[len('Vela resolved · '):]}"
-    if title.startswith("Vela · "):
-        rest = title[len("Vela · "):]
+    if title.startswith("alert · "):
+        return f"{prefix} {title[len('alert · '):]}"
+    if title.startswith("resolved · "):
+        return f"{prefix} {title[len('resolved · '):]}"
+    if title.startswith("· "):
+        rest = title[len("· "):]
         if rest.startswith(label):
             return title
-        return f"{prefix} · {rest}"
-    if title.startswith(f"{label} · "):
+        return f"{prefix} {rest}"
+    if title.startswith(f"{label} "):
         return title
     return f"{prefix} · {title}"
 

@@ -57,7 +57,7 @@ class ConnectivityMonitor:
             label = vela_push.agent_label(agent_id)
             await self._send_connectivity_push(
                 agent_id=agent_id,
-                title=f"{label} back online",
+                title="back online",
                 body=f"{label} is reachable again.",
                 status="online",
             )
@@ -94,7 +94,7 @@ class ConnectivityMonitor:
         label = vela_push.agent_label(agent_id)
         await self._send_connectivity_push(
             agent_id=agent_id,
-            title=f"{label} unreachable",
+            title="unreachable",
             body=f"{label} is offline. Remote control is unavailable until it reconnects.",
             status="offline",
         )
