@@ -60,9 +60,15 @@ def agent_label(agent_id: str) -> str:
     if state.db is None:
         return agent_id
     agent = state.db.get_agent_by_id(agent_id)
-    if agent and agent.display_name:
+    if agent is None:
+        return agent_id
+    # Prefer hostname from metadata over display_name
+    if agent.metadata and agent.metadata.get("hostname"):
+        return agent.metadata["hostname"]
+    if agent.display_name:
         return agent.display_name
     return agent_id
+
 
 
 def agent_push_context(agent_id: str) -> dict[str, str]:
