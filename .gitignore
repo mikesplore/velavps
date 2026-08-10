@@ -37,6 +37,12 @@ htmlcov/
 Thumbs.db
 .env
 *.db*
+
+# Container runtime artifacts (bind-mounted volumes live alongside the repo,
+# kept out of VCS; the SQLite DB, FCM key and any overrides are host-local).
+/data/
+/secrets/
+
 *-firebase-adminsdk-*.json
 firebase-service-account.json
 google-services.json

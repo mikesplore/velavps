@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+# =============================================================================
+# DEPRECATED — velavps is now deployed via Docker Compose.
+# This systemd installer is retained for reference only. New deployments should
+# run:  docker compose up -d --build   (see README "Container deployment").
+# =============================================================================
 set -euo pipefail
 
 RED='\033[0;31m'; YELLOW='\033[1;33m'; GREEN='\033[0;32m'; NC='\033[0m'

@@ -6,30 +6,9 @@ from fastapi.testclient import TestClient
 
 
 @pytest.fixture
-def client(tmp_path, monkeypatch):
-    """Create a test client with mocked state."""
-    import sys
-    sys.path.insert(0, "/home/mike/PycharmProjects/velavps")
-
-    from app.services.vela_agent_registry import AgentRegistry
-    from app.services.vela_database import VelaDatabase
-    from app.services.vela_forwarder import Forwarder
-    from app.services.vela_settings import Settings, VPSSettings
-    from app.services import vela_state as state
-
-    # Setup mock state
-    import app.services.vela_state as state_module
-
-    settings = Settings(vps=VPSSettings())
-    db = VelaDatabase(":memory:")
-    registry = AgentRegistry()
-
-    state_module.settings = settings
-    state_module.db = db
-    state_module.forwarder = Forwarder(settings, registry, db)
-    state_module.registry = registry
-
+def client():
     from main import app
+
     return TestClient(app)
 
 

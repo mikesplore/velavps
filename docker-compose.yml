@@ -1,0 +1,63 @@
+# Vela VPS relay service — container platform (replaces the legacy systemd unit).
+#
+#   docker compose up -d --build
+#   docker compose logs -f
+#   docker compose down            # stops + removes the container
+#   docker compose down -v         # also removes the persisted SQLite volume
+#
+# Runtime config is driven by env vars (see .env.example). Compose reads the
+# host .env file automatically for ${VAR:-default} interpolation below, and
+# the same vars are injected into the container via `environment`.
+services:
+  velavps:
+    build: .
+    container_name: velavps
+    restart: unless-stopped
+
+    # Container listen port is fixed at 8000 (see Dockerfile EXPOSE/CMD).
+    # Override the host-side port here or via VPS_PORT in .env.
+    ports:
+      - "${VPS_PORT:-8000}:8000"
+
+    environment:
+      # Persist the SQLite DB to a host bind-mount (data/vela.db) so pairing
+      # sessions, agent credentials and audit history survive restarts.
+      - DB_PATH=${DB_PATH:-/app/data/vela.db}
+      # Firebase Admin service-account JSON (mounted read-only — see volumes).
+      - VELAVPS_FCM_SERVICE_ACCOUNT_PATH=${VELAVPS_FCM_SERVICE_ACCOUNT_PATH:-/run/secrets/firebase-adminsdk.json}
+      # Optional config overrides. Sensible defaults ship in config.yaml and
+      # are only applied when the variable is non-empty.
+      - VPS_HOST=${VPS_HOST:-0.0.0.0}
+      - VPS_PORT=${VPS_PORT:-8000}
+      - VPS_RATE_LIMIT=${VPS_RATE_LIMIT:-100/minute}
+      - VPS_ALLOW_DIRECT_AGENT_FORWARDING=${VPS_ALLOW_DIRECT_AGENT_FORWARDING:-true}
+      - VPS_LEGACY_REGISTRATION_ENABLED=${VPS_LEGACY_REGISTRATION_ENABLED:-true}
+      - VPS_DEFAULT_AGENT_TIMEOUT_SECONDS=${VPS_DEFAULT_AGENT_TIMEOUT_SECONDS:-20}
+      - VPS_AGENT_CONNECT_WAIT_SECONDS=${VPS_AGENT_CONNECT_WAIT_SECONDS:-8}
+      - VPS_PAIRING_CODE_TTL_SECONDS=${VPS_PAIRING_CODE_TTL_SECONDS:-600}
+      - VPS_ACTIVATION_TOKEN_TTL_SECONDS=${VPS_ACTIVATION_TOKEN_TTL_SECONDS:-180}
+      - VPS_CONNECTIVITY_OFFLINE_DELAY_SECONDS=${VPS_CONNECTIVITY_OFFLINE_DELAY_SECONDS:-30}
+
+    volumes:
+      # SQLite persistence — bind-mounted so the DB is inspectable on the host
+      # (e.g. `sqlite3 data/vela.db ...`).
+      - ./data:/app/data
+      # Firebase Admin service-account JSON — place your key here:
+      #   mkdir -p secrets && cp /path/to/firebase-adminsdk.json secrets/firebase-adminsdk.json
+      #   chmod 600 secrets/firebase-adminsdk.json
+      - ./secrets:/run/secrets:ro
+      # (optional) override the in-image config.yaml defaults:
+      # - ./config.yaml:/app/config.yaml:ro
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health',timeout=3).status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s

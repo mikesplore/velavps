@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import secrets
 import sqlite3
 import threading
@@ -10,7 +11,10 @@ import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+from .db_path import get_db_path
 
 STATUS_INITIATED = "INITIATED"
 STATUS_AWAITING_PAIR = "AWAITING_PAIR"
@@ -18,6 +22,18 @@ STATUS_PAIRED = "PAIRED"
 STATUS_ACTIVE = "ACTIVE"
 STATUS_EXPIRED = "EXPIRED"
 STATUS_REVOKED = "REVOKED"
+
+
+def _resolve_sqlite_db_path(db_path: str) -> str:
+    raw = (db_path or "").strip()
+    if not raw:
+        raise ValueError("db_path must be a non-empty string")
+    if raw == ":memory:" or raw.startswith("file:"):
+        return raw
+
+    path = Path(os.path.expandvars(raw)).expanduser().resolve()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return str(path)
 
 
 def _utcnow() -> datetime:
@@ -69,8 +85,8 @@ class AgentRecord:
 
 
 class VelaDatabase:
-    def __init__(self, db_path: str = "vela.db"):
-        self.db_path = db_path
+    def __init__(self, db_path: str | None = None):
+        self.db_path = _resolve_sqlite_db_path(db_path or get_db_path())
         self._local = threading.local()
         self._init_db()
 

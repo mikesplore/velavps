@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # ============================================================
-# velavps start script
+# DEPRECATED — velavps now runs as a container.
+# This script is kept for local dev / debugging only. To run the
+# relay, use:  docker compose up -d --build   (see README).
 # ============================================================
 set -euo pipefail
 
@@ -29,4 +31,4 @@ info "Dependencies ready"
 HOST="${VPS_HOST:-0.0.0.0}"
 PORT="${VPS_PORT:-8000}"
 info "Starting velavps on ${HOST}:${PORT}"
-exec uvicorn main:app --host "$HOST" --port "$PORT"
+exec uvicorn main:app --host "$HOST" --port "$PORT" --proxy-headers --forwarded-allow-ips='*'

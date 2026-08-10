@@ -12,27 +12,61 @@ It is designed to accept public client requests, authenticate them, and forward 
 - Preservation of local agent response status and body
 - Legacy `/register` flow behind feature flag
 
-## Quick start
+## Quick start (container — recommended)
 
-1. Install dependencies:
+velavps runs as a Docker container managed by Docker Compose (`Dockerfile` +
+`docker-compose.yml`). The legacy `setup.sh` systemd installer and `start.sh`
+are kept for local debugging only.
+
+### 1. Configure runtime secrets
+
+```bash
+cp .env.example .env
+# Place your Firebase Admin service-account key (not google-services.json):
+mkdir -p secrets
+cp /path/to/firebase-adminsdk.json secrets/firebase-adminsdk.json
+chmod 600 .env secrets/firebase-adminsdk.json
+```
+
+`DB_PATH` and the `VPS_*` config defaults are baked into `docker-compose.yml`;
+set the non-default ones (e.g. `VPS_PORT`) in `.env`. (Back-compat: older
+deployments may still use `VELAVPS_DB_PATH`, which is still accepted.)
+
+### 2. Build and start
+
+```bash
+docker compose up -d --build
+```
+
+### 3. Verify
+
+```bash
+docker compose ps
+curl -s http://localhost:8000/health   # {"status":"ok"}
+docker compose logs -f                 # follow logs (replaces `velavps --logs`)
+```
+
+> The SQLite database is bind-mounted at `./data` so pairing sessions, agent
+> credentials and the audit log survive container restarts. Inspect/backup with
+> `sqlite3 data/vela.db ...`.
+
+### Local development (without Docker)
 
 ```bash
 python -m pip install -r requirements.txt
-```
-
-2. Start the app:
-
-```bash
 uvicorn main:app --host 0.0.0.0 --port 8000
+# or: ./start.sh
 ```
 
-Alternative: use the included script to create a virtual environment, install dependencies, and launch the app:
+### Production reverse proxy (nginx)
 
-```bash
-./start.sh
+Point `deploy/nginx-vela.conf` at the container's port (default `8000`):
+
+```nginx
+location / { proxy_pass http://127.0.0.1:8000; ... }
 ```
 
-3. Use `GET /health` to verify availability.
+See `deploy/nginx-vela.conf` for the WebSocket / SSE-friendly headers.
 
 ## Onboarding flow (pairing-based)
 
@@ -156,7 +190,7 @@ FCM credentials belong on the VPS, not on each user's PC. Set the Firebase Admin
 cp .env.example .env
 # edit VELAVPS_FCM_SERVICE_ACCOUNT_PATH to your downloaded service-account JSON
 chmod 600 .env
-sudo systemctl restart velavps
+docker compose restart velavps   # rebuild not needed; config reloads on restart
 ```
 
 `.env` key: `VELAVPS_FCM_SERVICE_ACCOUNT_PATH` (also accepts `FCM_SERVICE_ACCOUNT_PATH`).

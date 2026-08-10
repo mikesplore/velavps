@@ -9,13 +9,16 @@ from datetime import datetime, timezone, timedelta
 # Test 1: Verify database has ws_tokens table
 def test_database_schema():
     from app.services.vela_database import VelaDatabase
+    from app.services.db_path import get_db_path
     import sqlite3
+    from pathlib import Path
     
     # Initialize database (creates schema)
-    db = VelaDatabase("vela.db")
+    db_path = get_db_path()
+    db = VelaDatabase(db_path)
     
     # Now check if table exists
-    conn = sqlite3.connect("vela.db")
+    conn = sqlite3.connect(str(Path(db_path).expanduser()))
     cursor = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='ws_tokens'")
     result = cursor.fetchone()
     assert result is not None, "ws_tokens table should exist"

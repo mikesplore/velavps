@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+# =============================================================================
+# DEPRECATED — the `velavps` systemd CLI wrapper is superseded by Docker Compose.
+# Manage the service with:  docker compose <up|down|logs|ps|stop|restart>
+# This shim remains for environments still on the old systemd unit.
+# =============================================================================
 set -euo pipefail
 
 SERVICE_NAME="velavps"
