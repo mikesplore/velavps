@@ -1,4 +1,6 @@
 import hashlib
+import html
+import ipaddress
 import json
 import logging
 import secrets
@@ -8,7 +10,7 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi import status as http_status
-from fastapi.responses import StreamingResponse
+from fastapi.responses import HTMLResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from .vela_auth import get_secret
@@ -112,7 +114,27 @@ def _verify_agent_access(agent_id: str, secret: str):
 
 
 def _request_ip(request: Request) -> str:
-    return request.client.host if request.client else "unknown"
+    """Return the peer IP, trusting X-Forwarded-For only from configured proxies."""
+    peer = request.client.host if request.client else "unknown"
+    trusted = getattr(state.settings.vps, "trusted_proxy_ips", []) if state.settings else []
+    try:
+        peer_ip = ipaddress.ip_address(peer)
+    except ValueError:
+        return peer
+    is_trusted = False
+    for entry in trusted:
+        try:
+            network = ipaddress.ip_network(entry, strict=False)
+            if peer_ip in network:
+                is_trusted = True
+                break
+        except ValueError:
+            continue
+    if is_trusted:
+        forwarded = request.headers.get("x-forwarded-for", "")
+        if forwarded:
+            return forwarded.split(",", 1)[0].strip() or peer
+    return peer
 
 
 @router.post("/agents/register/start")
@@ -134,6 +156,9 @@ async def register_start(payload: RegisterStartRequest, request: Request):
     )
     metrics["register_started"] += 1
     logger.info("agent_register_started agent_id=%s", session["agent_id"])
+    base_url = str(request.base_url).rstrip("/")
+    verification_uri = f"{base_url}/pair"
+    verification_uri_complete = f"{verification_uri}?code={session['pairing_code']}"
     return {
         "api_version": API_VERSION,
         "agent_id": session["agent_id"],
@@ -141,13 +166,24 @@ async def register_start(payload: RegisterStartRequest, request: Request):
         "pairing_pin": session["pairing_pin"],
         "pairing_expires_in": session["pairing_expires_in"],
         "pairing_qr_payload": f"vela://pair?code={session['pairing_code']}&agent_id={session['agent_id']}",
+        "expires_in": session["pairing_expires_in"],
+        "interval": state.settings.vps.pairing_poll_interval_seconds,
+        "verification_uri": verification_uri,
+        "verification_uri_complete": verification_uri_complete,
     }
 
 
 @router.get("/agents/register/status")
-async def register_status(agent_id: str):
+async def register_status(agent_id: str, request: Request):
     if state.settings is None or state.db is None:
         raise HTTPException(status_code=http_status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Server not configured")
+    poll_interval = max(1, state.settings.vps.pairing_poll_interval_seconds)
+    if not rate_limiter.hit(f"pair_status:{agent_id}:{_request_ip(request)}", 1, poll_interval):
+        raise HTTPException(
+            status_code=http_status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="slow_down",
+            headers={"Retry-After": str(poll_interval)},
+        )
     try:
         status_payload = state.db.get_registration_status(
             agent_id=agent_id,
@@ -164,16 +200,30 @@ async def register_status(agent_id: str):
         status_payload["last_seen"] = registry_agent.last_seen.isoformat().replace("+00:00", "Z")
     else:
         status_payload["connected"] = False
-    return {"api_version": API_VERSION, **status_payload}
+    status_value = status_payload.get("status")
+    oauth_status = {
+        "AWAITING_PAIR": "authorization_pending",
+        "INITIATED": "authorization_pending",
+        "PAIRED": "success",
+        "ACTIVE": "success",
+        "EXPIRED": "expired_token",
+        "REVOKED": "access_denied",
+    }.get(status_value, "authorization_pending")
+    return {
+        "api_version": API_VERSION,
+        "interval": poll_interval,
+        "oauth_status": oauth_status,
+        **status_payload,
+    }
 
 
-@router.post("/pair/complete")
-async def pair_complete(payload: PairCompleteRequest, request: Request):
+def _complete_pairing(payload: PairCompleteRequest, request: Request) -> dict:
     if state.db is None:
         raise HTTPException(status_code=http_status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Server not configured")
 
-    pair_key = f"pair_complete:{_request_ip(request)}:{hashlib.sha1(payload.pairing_code.encode('utf-8')).hexdigest()[:8]}"
-    ip_key = f"pair_complete_ip:{_request_ip(request)}"
+    request_ip = _request_ip(request)
+    pair_key = f"pair_complete:{request_ip}:{hashlib.sha1(payload.pairing_code.encode('utf-8')).hexdigest()[:8]}"
+    ip_key = f"pair_complete_ip:{request_ip}"
     if not rate_limiter.hit(pair_key, max_hits=8, window_seconds=300) or not rate_limiter.hit(ip_key, max_hits=50, window_seconds=300):
         raise HTTPException(status_code=http_status.HTTP_429_TOO_MANY_REQUESTS, detail="rate_limit_exceeded")
 
@@ -181,20 +231,55 @@ async def pair_complete(payload: PairCompleteRequest, request: Request):
         result = state.db.complete_pairing(payload.pairing_code, payload.pairing_pin, payload.agent_label)
     except ValueError:
         metrics["pairing_invalid_or_expired"] += 1
-        logger.warning("pairing invalid_or_expired_code ip=%s", _request_ip(request))
+        logger.warning("pairing invalid_or_expired_code ip=%s", request_ip)
         raise HTTPException(status_code=http_status.HTTP_400_BAD_REQUEST, detail="invalid_or_expired_code")
 
     metrics["pairing_completed"] += 1
     logger.info("pairing_completed agent_id=%s", result["agent_id"])
-    relay_base_url = f"{str(request.base_url).rstrip('/')}/relay/{result['agent_id']}"
     return {
         "status": "paired",
         "agent_id": result["agent_id"],
-        "relay_base_url": relay_base_url,
+        "relay_base_url": f"{str(request.base_url).rstrip('/')}/relay/{result['agent_id']}",
         "idempotent": result["idempotent"],
         "relay_secret": result["relay_secret"],
         "relay_secret_shared": result["relay_secret_shared"],
     }
+
+
+@router.post("/pair/complete")
+async def pair_complete(payload: PairCompleteRequest, request: Request):
+    csrf_header = request.headers.get("x-vela-csrf")
+    if csrf_header:
+        csrf_cookie = request.cookies.get("vela_pair_csrf", "")
+        if not csrf_cookie or not secrets.compare_digest(csrf_header, csrf_cookie):
+            raise HTTPException(status_code=http_status.HTTP_403_FORBIDDEN, detail="invalid_csrf_token")
+    result = _complete_pairing(payload, request)
+    if csrf_header:
+        # Browser pairing must never receive a relay credential.
+        return {key: result[key] for key in ("status", "agent_id", "idempotent")}
+    return result
+
+
+@router.get("/pair", response_class=HTMLResponse)
+async def pairing_page(request: Request, code: str = ""):
+    """Phone-free browser pairing ceremony using the same pairing endpoint."""
+    csrf_token = secrets.token_urlsafe(24)
+    escaped_code = html.escape(code, quote=True)
+    escaped_csrf = html.escape(csrf_token, quote=True)
+    page = f"""<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Pair Vela</title>
+<style>body{{font-family:system-ui,sans-serif;max-width: thirtyrem;max-width:30rem;margin:4rem auto;padding:1rem;color:#172033}}label{{display:block;margin:.8rem 0 .25rem}}input{{width:100%;box-sizing:border-box;padding:.7rem;border:1px solid #bbc3d0;border-radius:.4rem}}button{{margin-top:1rem;padding:.7rem 1rem;border:0;border-radius:.4rem;background:#2457d6;color:white;cursor:pointer}}#message{{margin-top:1rem;padding:.7rem;border-radius:.4rem}}.error{{background:#fee2e2;color:#991b1b}}.ok{{background:#dcfce7;color:#166534}}</style></head>
+<body><h1>Pair Vela</h1><p>Enter the pairing code and PIN shown by <code>vela --setup</code>.</p>
+<form id="pair-form"><label for="code">Pairing code</label><input id="code" name="pairing_code" value="{escaped_code}" required inputmode="numeric" autocomplete="one-time-code">
+<label for="pin">Pairing PIN</label><input id="pin" name="pairing_pin" required inputmode="numeric" autocomplete="one-time-code">
+<label for="label">Agent label (optional)</label><input id="label" name="agent_label" maxlength="120">
+<button type="submit">Complete pairing</button></form><div id="message" hidden></div>
+<script>const csrf="{escaped_csrf}";const form=document.getElementById('pair-form');const msg=document.getElementById('message');
+form.addEventListener('submit',async(event)=>{{event.preventDefault();msg.hidden=true;try{{const body={{pairing_code:form.pairing_code.value.trim(),pairing_pin:form.pairing_pin.value.trim(),agent_label:form.agent_label.value.trim()||null}};const response=await fetch('/pair/complete',{{method:'POST',headers:{{'Content-Type':'application/json','X-Vela-CSRF':csrf}},body:JSON.stringify(body)}});const data=await response.json();if(!response.ok)throw new Error(data.detail||'Pairing failed');msg.textContent='Pairing completed. Return to the Vela setup window.';msg.className='ok';form.hidden=true;}}catch(error){{msg.textContent=error.message||'Pairing failed';msg.className='error';}}msg.hidden=false;}});</script></body></html>"""
+    response = HTMLResponse(page)
+    response.set_cookie("vela_pair_csrf", csrf_token, httponly=True, secure=request.url.scheme == "https", samesite="lax", max_age=900)
+    return response
 
 
 @router.post("/agents/register/activate")

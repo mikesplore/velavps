@@ -1,8 +1,10 @@
 import pytest
 from fastapi.testclient import TestClient
+from starlette.requests import Request
 
 from main import app
 from app.services import vela_state as state
+from app.routers.vela_relay import _request_ip, rate_limiter
 
 client = TestClient(app)
 
@@ -19,6 +21,7 @@ def cleanup_db():
         conn.execute("DELETE FROM agents")
         conn.execute("DELETE FROM secrets")
         conn.execute("DELETE FROM audit_events")
+    rate_limiter._events.clear()
 
     yield
 
@@ -32,6 +35,23 @@ def cleanup_db():
         conn.execute("DELETE FROM secrets")
         conn.execute("DELETE FROM audit_events")
 
+
+def _request_with_peer(peer: str, forwarded: str | None = None) -> Request:
+    headers = []
+    if forwarded:
+        headers.append((b"x-forwarded-for", forwarded.encode()))
+    return Request({"type": "http", "method": "GET", "path": "/", "headers": headers, "client": (peer, 1234)})
+
+
+def test_forwarded_for_is_ignored_unless_proxy_is_trusted():
+    original = list(state.settings.vps.trusted_proxy_ips)
+    try:
+        state.settings.vps.trusted_proxy_ips = []
+        assert _request_ip(_request_with_peer("198.51.100.10", "203.0.113.7")) == "198.51.100.10"
+        state.settings.vps.trusted_proxy_ips = ["198.51.100.10"]
+        assert _request_ip(_request_with_peer("198.51.100.10", "203.0.113.7, 198.51.100.10")) == "203.0.113.7"
+    finally:
+        state.settings.vps.trusted_proxy_ips = original
 
 def test_agent_register_auto_generates_secret():
     """Test that registering auto-generates and returns a secret."""
@@ -129,6 +149,7 @@ def test_pairing_happy_path_start_pair_activate():
     assert pair.json()["relay_secret"]
     assert pair.json()["relay_secret_shared"] is False
 
+    rate_limiter._events.clear()
     post_pair = client.get(f"/agents/register/status?agent_id={agent_id}")
     assert post_pair.status_code == 200
     post_pair_data = post_pair.json()
@@ -147,6 +168,50 @@ def test_pairing_happy_path_start_pair_activate():
     assert activate_data["credential"]
     assert activate_data["relay_secret"]
     assert "agent:relay" in activate_data["scopes"]
+
+
+def test_browser_pairing_uses_csrf_and_does_not_receive_secret():
+    start = client.post(
+        "/agents/register/start",
+        json={"agent_name": "browser-agent", "device_info": {"device_fingerprint": "browser-fp"}},
+    )
+    assert start.status_code == 200
+    start_data = start.json()
+    assert start_data["verification_uri"].endswith("/pair")
+    assert "code=" in start_data["verification_uri_complete"]
+
+    page = client.get(start_data["verification_uri_complete"])
+    assert page.status_code == 200
+    csrf = page.cookies.get("vela_pair_csrf")
+    assert csrf
+
+    response = client.post(
+        "/pair/complete",
+        json={
+            "pairing_code": start_data["pairing_code"],
+            "pairing_pin": start_data["pairing_pin"],
+            "agent_label": "Browser Agent",
+        },
+        headers={"X-Vela-CSRF": csrf},
+        cookies={"vela_pair_csrf": csrf},
+    )
+    assert response.status_code == 200
+    assert response.json()["status"] == "paired"
+    assert "relay_secret" not in response.json()
+
+
+def test_browser_pairing_rejects_invalid_csrf():
+    start = client.post(
+        "/agents/register/start",
+        json={"agent_name": "browser-csrf-agent", "device_info": {"device_fingerprint": "csrf-fp"}},
+    )
+    data = start.json()
+    response = client.post(
+        "/pair/complete",
+        json={"pairing_code": data["pairing_code"], "pairing_pin": data["pairing_pin"]},
+        headers={"X-Vela-CSRF": "wrong"},
+    )
+    assert response.status_code == 403
 
 
 def test_pairing_code_single_use_and_invalid_code_response():
@@ -243,6 +308,7 @@ def test_activation_token_is_stable_across_status_polls():
     assert paired.status_code == 200
 
     first_status = client.get(f"/agents/register/status?agent_id={agent_id}")
+    rate_limiter._events.clear()
     second_status = client.get(f"/agents/register/status?agent_id={agent_id}")
     assert first_status.status_code == 200
     assert second_status.status_code == 200

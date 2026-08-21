@@ -8,6 +8,8 @@ vps:
   pairing_code_ttl_seconds: 600
   activation_token_ttl_seconds: 180
   agent_connect_wait_seconds: 8
+  pairing_poll_interval_seconds: 5
+  trusted_proxy_ips: []
   fcm_service_account_path: ""
   connectivity_offline_delay_seconds: 30
   api_keys: []

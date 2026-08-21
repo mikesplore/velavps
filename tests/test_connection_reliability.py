@@ -3,9 +3,9 @@ import asyncio
 import pytest
 from fastapi import HTTPException
 
-from services.vela_agent_registry import AgentRegistry
-from services.vela_forwarder import Forwarder
-from services.vela_settings import Settings, VPSSettings
+from app.services.vela_agent_registry import AgentRegistry
+from app.services.vela_forwarder import Forwarder
+from app.services.vela_settings import Settings, VPSSettings
 
 
 def _forwarder(wait_seconds: int = 1) -> tuple[Forwarder, AgentRegistry]:
