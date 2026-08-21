@@ -305,13 +305,29 @@ async def agent_tunnel(websocket: WebSocket, agent_id: str, token: str | None = 
 
     await websocket.accept()
     agent = await state.registry.set_websocket_connection(agent_id, websocket)
+    connection_id = agent.connection_id
+    try:
+        async with agent.send_lock:
+            await websocket.send_json({"type": "connection_ready", "connection_id": connection_id})
+    except Exception:
+        await state.registry.remove_websocket_connection(agent_id, websocket)
+        return
 
     try:
         while True:
             message = await websocket.receive_json()
             message_type = message.get("type")
+            if message.get("connection_id") and message.get("connection_id") != connection_id:
+                continue
             if message_type == "heartbeat":
                 agent.touch()
+                async with agent.send_lock:
+                    await websocket.send_json({
+                        "type": "heartbeat_ack",
+                        "connection_id": connection_id,
+                        "sequence": message.get("sequence"),
+                        "server_time": datetime.now(timezone.utc).isoformat(),
+                    })
                 continue
 
             if message_type == "forward_response":
@@ -350,9 +366,9 @@ async def agent_tunnel(websocket: WebSocket, agent_id: str, token: str | None = 
                     await session.chunks.put(None)
                 continue
     except WebSocketDisconnect:
-        await state.registry.remove_websocket_connection(agent_id)
+        await state.registry.remove_websocket_connection(agent_id, websocket)
     except Exception:
-        await state.registry.remove_websocket_connection(agent_id)
+        await state.registry.remove_websocket_connection(agent_id, websocket)
 
 
 @router.get("/relay/{agent_id}/status", dependencies=[Depends(get_secret)])

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import secrets
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
@@ -16,6 +17,7 @@ class StreamRelaySession:
     headers: Dict[str, str] = field(default_factory=dict)
     chunks: asyncio.Queue = field(default_factory=asyncio.Queue)
     started: asyncio.Event = field(default_factory=asyncio.Event)
+    terminal_error: str | None = None
 
 
 @dataclass
@@ -33,6 +35,9 @@ class AgentConnection:
     pending_responses: Dict[str, asyncio.Future] = field(default_factory=dict)
     pending_streams: Dict[str, StreamRelaySession] = field(default_factory=dict)
     pending_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    connection_id: str | None = None
+    connected_event: asyncio.Event = field(default_factory=asyncio.Event)
+    send_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
     def touch(self) -> None:
         self.last_seen = datetime.now(timezone.utc)
@@ -102,30 +107,47 @@ class AgentRegistry:
         async with self._lock:
             return [agent.as_dict() for agent in self._agents.values()]
 
-    async def set_websocket_connection(self, agent_id: str, websocket: WebSocket) -> AgentConnection:
+    async def set_websocket_connection(self, agent_id: str, websocket: WebSocket | None) -> AgentConnection:
+        old_websocket = None
         async with self._lock:
             agent = self._agents.get(agent_id)
             if agent is None:
                 agent = AgentConnection(agent_id=agent_id)
                 self._agents[agent_id] = agent
+            old_websocket = agent.websocket if agent.websocket is not websocket else None
             agent.websocket = websocket
             agent.connected = websocket is not None
+            if websocket is not None:
+                agent.connection_id = secrets.token_urlsafe(16)
+                agent.connected_event.set()
+            else:
+                agent.connection_id = None
+                agent.connected_event.clear()
             agent.touch()
+        if old_websocket is not None:
+            try:
+                await old_websocket.close(code=1000, reason="Replaced by a newer connection")
+            except Exception:
+                pass
         if websocket is not None:
             from app.services.vela_connectivity import monitor as connectivity_monitor
 
             await connectivity_monitor.on_agent_connected(agent_id)
         return agent
 
-    async def remove_websocket_connection(self, agent_id: str) -> None:
+    async def remove_websocket_connection(self, agent_id: str, websocket: WebSocket | None = None) -> None:
         was_connected = False
         async with self._lock:
             agent = self._agents.get(agent_id)
             if agent is None:
                 return
+            if websocket is not None and agent.websocket is not websocket:
+                return
             was_connected = agent.connected
             agent.websocket = None
             agent.connected = False
+            agent.connection_id = None
+            agent.connected_event.clear()
             # Keep ws_token intact for reconnection; do NOT clear it here
             # Only clear in-memory token reference, but keep DB token for reissue
             agent.ws_token = None
@@ -136,6 +158,7 @@ class AgentRegistry:
                         future.set_exception(RuntimeError("Agent connection closed"))
                 agent.pending_responses.clear()
                 for session in agent.pending_streams.values():
+                    session.terminal_error = "agent_connection_lost"
                     try:
                         session.chunks.put_nowait(None)
                     except asyncio.QueueFull:
