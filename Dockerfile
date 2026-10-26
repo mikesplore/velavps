@@ -21,8 +21,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 # so you never need to rebuild the image to reconfigure the relay.
 COPY main.py config.yaml ./
 COPY app ./app
-COPY routers ./routers
-COPY services ./services
 
 # Persistent state lives in /app/data (bind-mounted from the host) and the
 # Firebase Admin service-account JSON lives in /run/secrets (read-only mount).
