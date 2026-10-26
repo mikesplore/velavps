@@ -170,6 +170,23 @@ def test_pairing_happy_path_start_pair_activate():
     assert "agent:relay" in activate_data["scopes"]
 
 
+def test_pairing_status_rate_limit_includes_retry_after_header():
+    start = client.post(
+        "/agents/register/start",
+        json={"agent_name": "rate-limit-agent", "device_info": {"device_fingerprint": "rate-limit-fp"}},
+    )
+    assert start.status_code == 200
+    agent_id = start.json()["agent_id"]
+
+    first_status = client.get(f"/agents/register/status?agent_id={agent_id}")
+    limited_status = client.get(f"/agents/register/status?agent_id={agent_id}")
+
+    assert first_status.status_code == 200
+    assert limited_status.status_code == 429
+    assert limited_status.json()["message"] == "slow_down"
+    assert limited_status.headers["retry-after"] == str(state.settings.vps.pairing_poll_interval_seconds)
+
+
 def test_browser_pairing_uses_csrf_and_does_not_receive_secret():
     start = client.post(
         "/agents/register/start",

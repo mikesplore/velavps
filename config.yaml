@@ -1,15 +1,31 @@
-vps:
-  host: 0.0.0.0
-  port: 8000
-  allow_direct_agent_forwarding: true
-  default_agent_timeout_seconds: 20
-  rate_limit: 100/minute
-  legacy_registration_enabled: true
-  pairing_code_ttl_seconds: 600
-  activation_token_ttl_seconds: 180
-  agent_connect_wait_seconds: 8
-  pairing_poll_interval_seconds: 5
-  trusted_proxy_ips: []
-  fcm_service_account_path: ""
-  connectivity_offline_delay_seconds: 30
-  api_keys: []
+host: 127.0.0.1
+port: 8765
+secret_key: xP0h3hByDHGp_99TXwW5JwBGFxEfHe-V6nROhMXx2To
+token_expire_minutes: 1440
+allowed_origins: []
+allowed_base_dirs:
+- /home/mike
+rate_limit_default: 100/minute
+route_rate_limits:
+  /auth/token: 10/minute
+  /ping: 60/minute
+feature_flags:
+  display: true
+  audio: true
+  power: true
+  notifications: true
+  network: true
+  filesystem: true
+  input_control: true
+  system_info: true
+  monitoring: true
+  processes: true
+  security: true
+  scheduler: true
+  maintenance: true
+  media: true
+  clipboard: true
+  admin_dashboard: true
+username: mike
+password_hash: $2b$12$OpyaDBhvmLl.2sbqjum1puNsezj1MHzmBgkkeb.scrWYk0vNHVW3W
+log_level: INFO
